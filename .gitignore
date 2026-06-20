@@ -1,0 +1,14 @@
+.farm/
+.parcel/
+.tmp/
+target/
+dist/
+mnt/
+
+.env
+mcp.json
+.mcp.json
+*.log
+*.parcel
+.DS_Store
+Thumbs.db

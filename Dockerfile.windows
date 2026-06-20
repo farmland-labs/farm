@@ -1,0 +1,84 @@
+# Cross-compile `farm.exe` for Windows from a Linux container using
+# `cargo-xwin`. cargo-xwin downloads Microsoft's official Windows
+# SDK + CRT redistributable (legitimately, under the MS EULA's
+# cross-compile clause) and wires up the MSVC linker against clang
+# / lld — so the resulting binary is genuine x86_64-pc-windows-msvc,
+# byte-for-byte equivalent to what `cargo build` would produce on a
+# Windows host.
+#
+# Why not Alpine like Dockerfile (Linux musl)? cargo-xwin pulls a
+# real LLVM / clang / lld stack; Debian's apt repos have them
+# pre-built and tested together. Alpine works but adds friction
+# we don't need.
+#
+# Build:
+#   docker build -f farm/Dockerfile.windows -t farm-builder-windows farm/
+#   podman build -f farm/Dockerfile.windows -t farm-builder-windows farm/
+#
+# Extract the binary:
+#   id=$(docker create farm-builder-windows) && docker cp "$id:/farm.exe" ./dist/windows-x86_64/farm.exe && docker rm "$id"
+#
+# The `Farmfile` wraps this as `windows-amd64-{docker,podman}` ops.
+#
+# Note: only x86_64 is built here. `aarch64-pc-windows-msvc` is
+# possible (same SDK supports it) but Windows-on-ARM users are
+# rare enough to leave for a follow-up — adding it would mean a
+# second invocation with `--target aarch64-pc-windows-msvc`, no
+# Dockerfile rework.
+
+# ---- Build stage ---------------------------------------------------------
+FROM rust:1.91.1-bookworm AS builder
+
+# cargo-xwin needs:
+#   - clang + lld    linker chain that understands MS PE/COFF output
+#   - llvm           provides `llvm-lib` (MSVC `lib.exe` equivalent
+#                    invoked by `cc-rs` during the C/C++ portion of
+#                    crate builds), plus `llvm-ar`, `llvm-rc`, the
+#                    full archiver / resource-compiler tool set
+#   - xz-utils       cargo-xwin extracts the SDK tarballs with xz
+#   - pkg-config     cargo deps (reqwest TLS, etc.) probe with it
+#   - git            cargo resolves git deps at fetch time
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang \
+        lld \
+        llvm \
+        xz-utils \
+        pkg-config \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install cargo-xwin (locked for reproducibility). Pinned via
+# --version when we need to bump — leaving unversioned today so
+# the first build picks the latest tested release.
+RUN cargo install cargo-xwin --locked
+
+RUN rustup target add x86_64-pc-windows-msvc
+
+WORKDIR /src
+
+# Copy the entire farm/ context as the directory is self-contained.
+COPY . .
+
+# Build. cargo-xwin automatically downloads + caches the Windows
+# SDK under ~/.cache/cargo-xwin on first run; subsequent builds
+# reuse it (a docker layer cache hit on this line skips re-builds
+# entirely if the source hasn't changed).
+#
+# XWIN_ACCEPT_LICENSE: required since the SDK download triggers
+# the MS license-acceptance prompt under interactive use. In CI
+# we accept upfront — this is the MSVC redistributable license
+# that Microsoft explicitly permits for cross-compile use.
+ENV XWIN_ACCEPT_LICENSE=1
+
+RUN cargo xwin build \
+        --release \
+        --target x86_64-pc-windows-msvc \
+        --bin farm \
+    && cp /src/target/x86_64-pc-windows-msvc/release/farm.exe /farm.exe
+
+# ---- Final stage ---------------------------------------------------------
+# Plain `scratch` image carrying only the windows binary. Extract
+# via `{docker,podman} create` + `cp`.
+FROM scratch
+COPY --from=builder /farm.exe /farm.exe

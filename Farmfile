@@ -1,0 +1,165 @@
+version: 1
+
+[goal]
+build:         build
+test:          test
+clean:         clean
+native:        build-native
+darwin-native: build-darwin-all
+linux:         build-linux-all-podman
+windows:       build-windows-all-podman
+all:           build-all
+
+
+// Default workspace build (workspace-context cargo, all targets).
+[operation.build]
+work: cargo build
+input: **/Cargo.toml, **/*.rs
+output:
+    ./target/debug/farm
+    ./target/release/farm
+
+
+[operation.test]
+work: cargo test
+after: build
+input: **/Cargo.toml, **/*.rs
+
+
+// ----------------------------------------------------------------------
+// `build-native` — build the `farm` binary on the host arch.
+[operation.build-native]
+work: echo "build native binaries"
+work: cargo build --release --bin farm
+work: mkdir -p dist/darwin-arm64/ && cp -v ./target/release/farm dist/darwin-arm64/
+input: **/Cargo.toml, **/*.rs
+output: ./target/release/farm
+
+
+// ----------------------------------------------------------------------
+// Linux musl builds — Podman variants.
+[operation.build-linux-amd64-podman]
+work: echo "build linux-amd64 binaries with podman"
+work: mkdir -p dist/linux-x86_64
+    && podman build
+        --platform linux/amd64
+        --build-arg TARGETARCH=amd64
+        -t farm-builder-amd64
+        .
+    && id=$(podman create farm-builder-amd64)
+    && podman cp "$id:/farm" dist/linux-x86_64/farm
+    && podman rm "$id"
+input: Dockerfile, .dockerignore, Cargo.toml, Cargo.lock, src/**/*.rs
+output: dist/linux-x86_64/farm
+
+
+[operation.build-linux-arm64-podman]
+work: echo "build linux-arm64 binaries with podman"
+work: mkdir -p dist/linux-aarch64
+    && podman build
+        --platform linux/arm64
+        --build-arg TARGETARCH=arm64
+        -t farm-builder-arm64
+        .
+    && id=$(podman create farm-builder-arm64)
+    && podman cp "$id:/farm" dist/linux-aarch64/farm
+    && podman rm "$id"
+input: Dockerfile, .dockerignore, Cargo.toml, Cargo.lock, src/**/*.rs
+output: dist/linux-aarch64/farm
+
+
+[operation.build-linux-all-podman]
+work: echo "build all linux binaries with podman"
+after: build-linux-amd64-podman, build-linux-arm64-podman
+
+
+// ----------------------------------------------------------------------
+// Darwin builds — native cargo on a macOS host.
+//
+// **Mac-host-only.** Apple's macOS SDK is required to link these
+// targets and cannot legally ride inside a Linux container. If
+// you're on Linux, skip these and let CI / a build Mac handle
+// the darwin pair.
+//
+// Both targets cross-link fine from either Apple-Silicon or Intel
+// hosts (Xcode supplies the universal SDK), so a single Mac
+// produces both `darwin-x86_64/farm` and `darwin-aarch64/farm`.
+// ----------------------------------------------------------------------
+[operation.build-darwin-amd64]
+work: echo "build darwin-x86_64 binaries"
+work: rustup target add x86_64-apple-darwin
+    && cargo build --release --bin farm --target x86_64-apple-darwin
+    && mkdir -p dist/darwin-x86_64
+    && cp ./target/x86_64-apple-darwin/release/farm dist/darwin-x86_64/farm
+input: **/Cargo.toml, **/*.rs
+output: dist/darwin-x86_64/farm
+
+
+[operation.build-darwin-arm64]
+work: echo "build darwin-aarch64 binaries"
+work: rustup target add aarch64-apple-darwin
+    && cargo build --release --bin farm --target aarch64-apple-darwin
+    && mkdir -p dist/darwin-aarch64
+    && cp ./target/aarch64-apple-darwin/release/farm dist/darwin-aarch64/farm
+input: **/Cargo.toml, **/*.rs
+output: dist/darwin-aarch64/farm
+
+
+[operation.build-darwin-all]
+work: echo "buils darwin-amd64 + darwin-arm64"
+after: build-darwin-amd64, build-darwin-arm64
+
+
+// ----------------------------------------------------------------------
+// Windows build — cargo-xwin inside Docker/Podman.
+//
+// Uses `Dockerfile.windows`, which spins up a Debian-based image
+// with clang+lld+cargo-xwin and produces a real
+// `x86_64-pc-windows-msvc` binary (no need for a Windows host;
+// the Microsoft SDK redistributable is legally usable for
+// cross-compile and gets downloaded by cargo-xwin on first run).
+//
+// Aarch64 Windows is not built today (cargo-xwin supports it; add
+// a sibling operation if a Surface-Pro-X user shows up).
+// ----------------------------------------------------------------------
+[operation.build-windows-amd64-podman]
+work: echo "build windows-amd64 with podman"
+work: mkdir -p dist/windows-x86_64
+    && podman build
+        -f Dockerfile.windows
+        -t farm-builder-windows-amd64
+        .
+    && id=$(podman create farm-builder-windows-amd64)
+    && podman cp "$id:/farm.exe" dist/windows-x86_64/farm.exe
+    && podman rm "$id"
+input: Dockerfile.windows, .dockerignore, Cargo.toml, Cargo.lock, src/**/*.rs
+output: dist/windows-x86_64/farm.exe
+
+
+[operation.build-windows-all-podman]
+work: echo "build all windows with podman"
+after: build-windows-amd64-podman
+
+
+// ----------------------------------------------------------------------
+// `all` — aggregator producing every supported target. On a Mac
+// host runs all 5; on a Linux host the darwin pair fails fast
+// (rustup target add succeeds but the cargo build needs an Apple
+// SDK that isn't present). The `dist/` layout produced here is
+// exactly what `scripts/release-stage.sh` and
+// `terraform/console/upload-install-binaries.sh` consume.
+// ----------------------------------------------------------------------
+[operation.build-all]
+work: echo "build all supported targets"
+after:
+    build-linux-all-podman
+    build-darwin-all
+    build-windows-all-podman
+
+
+[operation.clean]
+work: cargo clean
+
+[cache]
+env_command:
+    RUSTC_VERSION: rustc --version

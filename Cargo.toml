@@ -1,0 +1,78 @@
+[package]
+name = "farm"
+version = "0.4.0"
+edition = "2021"
+description = "Farm - Build operations runner with dependency graph execution and simple caching."
+authors = [
+    "Christian Staffa <christian@farmland.rocks>",
+    "Farmland Team <farm@farmland.rocks>",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/farmland-labs/farm"
+keywords = ["build", "automation", "ci", "runner", "farmland"]
+categories = ["development-tools", "command-line-utilities"]
+# Build/CI scaffolding that doesn't belong in the published crate.
+exclude = [
+    "Dockerfile",
+    "Dockerfile.windows",
+    ".dockerignore",
+    "Farmfile",
+    "dist/",
+]
+
+[[bin]]
+name = "farm"
+path = "src/bin/farm/main.rs"
+
+[[bench]]
+name = "cache_bench"
+harness = false
+
+[dependencies]
+anyhow = "1.0"
+atty = "0.2"
+blake3 = "1.5"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.4", features = ["derive"] }
+colored = "2.0"
+dotenvy = "0.15"
+glob = "0.3"
+hex = "0.4"
+# `nom` is needed by the vendored parser at `src/vendor/parse/`.
+nom = "8.0.0"
+petgraph = { version = "0.8.2", features = ["serde"] }
+rayon = "1.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+toml = "0.8"
+# the logging facade is vendored at `src/vendor/log/`.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.6", features = ["v4", "v7", "serde"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+env_logger = "0.10"
+serial_test = "3"
+tempfile = "3.8"
+
+[profile.release]
+debug = false
+strip = true
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+
+[profile.dev]
+incremental = true
+opt-level = 1
+
+# Cross-compilation friendly: LTO off so musl builds don't run out of memory on smaller machines.
+[profile.release-musl]
+inherits = "release"
+lto = false
+strip = true
+codegen-units = 4

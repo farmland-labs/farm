@@ -1,0 +1,23 @@
+# Docker build context excludes — anything not needed by `cargo build`.
+
+target/
+.farm/
+*.zip
+*.tar.gz
+*.log
+.DS_Store
+
+# Editor / IDE artefacts
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git internals — sources are copied via Cargo, not git.
+.git/
+.gitignore
+
+# Existing dist directory if any
+dist/
+target/
+assets/
