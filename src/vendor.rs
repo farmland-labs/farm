@@ -1,18 +1,13 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 
-//! Vendored copies of external crates.
+//! Self-contained in-tree modules.
 //!
-//! Each child module here is a byte-for-byte copy of an upstream
-//! source, kept in-tree so `farm` can be built and shipped
-//! standalone without pulling each one as a separate Cargo
-//! dependency. Drift between this copy and the upstream is a bug
-//! — security-relevant modules (e.g. `protocol`) include their
-//! own contract tests to catch it.
-//!
-//! Files in here are not the primary source of truth for the
-//! types they hold; the corresponding workspace crate is. If you
-//! need to change a type, change the workspace source first,
-//! then re-sync.
+//! `parse` and `log` are vendored copies of upstream sources,
+//! kept in-tree so `farm` can be built and shipped standalone
+//! without pulling each one as a separate Cargo dependency.
+//! `protocol` is the first-party schema for the orchestrator-to-
+//! `farm` handoff; it sits here alongside the other self-contained
+//! modules and carries its own contract tests.
 
 pub mod log;
 pub mod parse;
