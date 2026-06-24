@@ -4,7 +4,7 @@
 //! that invokes it.
 //!
 //! Concretely: the on-disk schema for
-//! `.farm/ctx/{ctx}/ops/{operation}/context.json`. The orchestrator
+//! `.farm/run/{build_id}/context.json`. The orchestrator
 //! writes this file before invoking `farm`; `farm` reads it for
 //! `farm info` display and forwards a strict subset of the
 //! [`Identity`] fields into child Farmfile scripts as `FARM_*`
@@ -18,7 +18,7 @@
 //! confuse:
 //!
 //! ```text
-//! .farm/ctx/{ctx}/ops/{op}/
+//! .farm/run/{build_id}/
 //!   context.json              ← typed, trusted (this crate's schema)
 //!   external/
 //!     vcs.json                ← webhook-derived data
@@ -117,7 +117,7 @@ pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 /// source.
 ///
 /// ```text
-/// .farm/ctx/{ctx}/ops/{op}/
+/// .farm/run/{build_id}/
 ///   context.json         ← this crate's typed schema
 ///   external/
 ///     vcs.json           ← conventional source name
@@ -128,7 +128,7 @@ pub const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 /// directory; they are opaque by design.
 pub const EXTERNAL_SUBDIR: &str = "external";
 
-/// Top-level shape of `.farm/ctx/{ctx}/ops/{operation}/context.json`.
+/// Top-level shape of `.farm/run/{build_id}/context.json`.
 ///
 /// Strictly typed — there is no opaque `Value` field. Untrusted /
 /// external data lives in sibling files under [`EXTERNAL_SUBDIR`].

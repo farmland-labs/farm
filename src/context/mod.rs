@@ -430,8 +430,8 @@ impl RunPaths {
     }
 
     /// Directory holding untrusted external data files
-    /// (`external/<source>.json`). See the `farm-protocol`
-    /// crate's `EXTERNAL_SUBDIR` constant.
+    /// (`external/<source>.json`). See
+    /// `vendor::protocol::EXTERNAL_SUBDIR`.
     pub fn external_dir(&self) -> PathBuf {
         self.run_dir.join(crate::vendor::protocol::EXTERNAL_SUBDIR)
     }
