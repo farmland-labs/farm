@@ -41,6 +41,12 @@ hex = "0.4"
 # `nom` is needed by the vendored parser at `src/vendor/parse/`.
 nom = "8.0.0"
 petgraph = { version = "0.8.2", features = ["serde"] }
+# Interactive (TTY) operation execution: a real PTY so a developer can answer
+# prompts while farm still tees a clean log. See ADR-081.
+portable-pty = "0.9"
+# Only the terminal module (raw mode, size) is used; default features are kept
+# so the Windows backend stays enabled.
+crossterm = "0.29"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -52,8 +58,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.6", features = ["v4", "v7", "serde"] }
 
+# Interactive-mode stdin teardown + terminal-resize (SIGWINCH) forwarding are
+# Unix-only; the Windows path (ConPTY) is validated separately — see ADR-081.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+signal-hook = "0.4"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# Drives `farm` behind a real PTY in the interactive-execution tests.
+portable-pty = "0.9"
 env_logger = "0.10"
 serial_test = "3"
 tempfile = "3.8"

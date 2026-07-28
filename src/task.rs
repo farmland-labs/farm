@@ -27,6 +27,13 @@ pub struct Context<'a> {
   pub env: &'a CapturedEnv,
   pub silent: bool,
   pub split_streams: bool,
+  /// When `true`, this operation runs through a PTY so the child sees a real
+  /// terminal and a developer can answer prompts; farm relays keystrokes and
+  /// tees a clean (ANSI-stripped) log. When `false` (a tool/buddy passed
+  /// `--non-interactive`, or there is no controlling TTY) the child's stdin is
+  /// `/dev/null` and it fails fast on any read. Positive polarity: `true` =
+  /// interactive on. Resolved once at the CLI boundary. See ADR-081.
+  pub opt_interactive: bool,
   /// Optional sink for streaming command output line-by-line into the build
   /// log file as it arrives. `None` when there is no file logging (or in
   /// non-engine callers such as tests).

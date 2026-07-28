@@ -33,6 +33,9 @@ pub struct ExecutionContext {
     pub start_time: SystemTime,
     pub silent: bool,
     pub split_streams: bool,
+    /// Interactive (PTY) execution for this run. See [`crate::task::Context`]
+    /// and ADR-081.
+    pub interactive: bool,
     pub logger: BuildLogger,
     pub cache: CacheLookup,
     /// Global cache configuration from `[cache]` section
@@ -101,7 +104,8 @@ impl Executor {
 
     /// Execute a plan for a specific goal and variant
     #[allow(clippy::too_many_arguments)]
-    pub fn execute_plan(&self, plan: &Plan, goal: &str, variant: &str, silent: bool, log_output: &str, skip_deps: bool, split_streams: bool, no_cache: bool, build_id: Option<&str>) -> Result<ExecutionResult, String> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_plan(&self, plan: &Plan, goal: &str, variant: &str, silent: bool, log_output: &str, skip_deps: bool, split_streams: bool, no_cache: bool, interactive: bool, build_id: Option<&str>) -> Result<ExecutionResult, String> {
         let start_time = SystemTime::now();
         
         // Parse log mode
@@ -155,6 +159,7 @@ impl Executor {
             start_time,
             silent,
             split_streams,
+            interactive,
             logger,
             cache,
             cache_config: plan.cache.clone(),
@@ -481,6 +486,7 @@ impl Executor {
             env: &env,
             silent: exec_ctx.silent,
             split_streams: exec_ctx.split_streams,
+            opt_interactive: exec_ctx.interactive,
             // Stream this stage's command output straight into the log file as
             // it arrives. The handle shares the logger's writers (no-op when
             // file logging is off).

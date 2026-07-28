@@ -94,6 +94,15 @@ pub(crate) struct Args {
     )]
     pub(crate) no_cache: bool,
 
+    /// Force non-interactive execution: children get /dev/null on stdin and
+    /// fail fast on any prompt, even when a TTY is present. Tools/buddies pass
+    /// this. Without it, a run on a controlling TTY is interactive (ADR-081).
+    #[arg(
+        long,
+        help = "Force non-interactive execution (close child stdin even on a TTY)"
+    )]
+    pub(crate) non_interactive: bool,
+
     /// Enable verbose logging (debug level)
     #[arg(
         long,
