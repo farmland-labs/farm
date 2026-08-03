@@ -66,9 +66,9 @@ work: printf 'line1\nline2\nline3\n'
     assert!(p1 < p2 && p2 < p3, "streamed lines out of order:\n{log}");
 
     // Streamed merged output carries no per-stream framing, but keeps the
-    // surrounding [log] header/footer.
+    // surrounding [farm] header/footer.
     assert!(!log.contains("[stdout]"), "merged log must not be framed:\n{log}");
-    assert!(log.contains("[log] stage=greet"), "missing stage header:\n{log}");
+    assert!(log.contains("[farm] stage=greet"), "missing stage header:\n{log}");
     assert!(log.contains("exit_code=0 success=true"), "missing footer:\n{log}");
 }
 

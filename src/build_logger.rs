@@ -9,8 +9,10 @@
 //! arrives, via a [`LogStream`] handle the command runner (`cmd.rs`) writes
 //! to during execution. Each line is ANSI-stripped and flushed immediately,
 //! so `tail -f` works live and a crash mid-command loses nothing. The
-//! `BuildLogger` itself writes the surrounding `[log]` headers/footer; both
-//! share the same underlying writer so ordering stays correct.
+//! `BuildLogger` itself writes the surrounding `[farm]` headers/footer (the
+//! `[farm]` prefix marks lines emitted by farm rather than the task, matching
+//! the inline `[farm]` notices the command runner writes); both share the same
+//! underlying writer so ordering stays correct.
 //!
 //! ## Combined log (default, merged streams)
 //!
@@ -18,12 +20,12 @@
 //! log mirrors that — an unframed run of lines between the headers and footer:
 //!
 //! ```text
-//! [log] stage=name variant=default timestamp_start=2026-03-11T21:51:51.730Z
-//! [log] cmd=/bin/sh -c echo "hello"
+//! [farm] stage=name variant=default timestamp_start=2026-03-11T21:51:51.730Z
+//! [farm] cmd=/bin/sh -c echo "hello"
 //!
 //! hello
 //!
-//! [log] exit_code=0 success=true duration_ms=4 timestamp_end=2026-03-11T21:51:51.734Z
+//! [farm] exit_code=0 success=true duration_ms=4 timestamp_end=2026-03-11T21:51:51.734Z
 //! ```
 //!
 //! ## Split file mode (`--log-output file-split`)
@@ -42,7 +44,7 @@ use chrono::Utc;
 /// `LogStream` handle (streamed command output). Sharing the *same* writer —
 /// rather than opening a second handle to the file — keeps the buffered file
 /// position consistent across both, so streamed lines and the surrounding
-/// `[log]` framing never clobber each other.
+/// `[farm]` framing never clobber each other.
 type SharedWriter = Arc<Mutex<BufWriter<File>>>;
 
 /// Strip ANSI escape sequences (SGR colors, OSC hyperlinks, and
@@ -296,23 +298,23 @@ impl BuildLogger {
         Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
     }
 
-    /// Write stage header: [log] stage=name variant=default timestamp_start=...
+    /// Write stage header: [farm] stage=name variant=default timestamp_start=...
     pub fn write_stage_header(&mut self, stage: &str, variant: &str) -> Result<(), String> {
-        let line = format!("[log] stage={} variant={} timestamp_start={}", stage, variant, Self::timestamp());
+        let line = format!("[farm] stage={} variant={} timestamp_start={}", stage, variant, Self::timestamp());
         self.write_raw(&line)
     }
 
-    /// Write task/command header: [log] cmd=...
+    /// Write task/command header: [farm] cmd=...
     pub fn write_task_header(&mut self, cmd: &str) -> Result<(), String> {
-        let line = format!("[log] cmd={}", cmd);
+        let line = format!("[farm] cmd={}", cmd);
         self.write_raw(&line)
     }
 
-    /// Write stage footer: [log] exit_code=... success=... duration_ms=... timestamp_end=...
+    /// Write stage footer: [farm] exit_code=... success=... duration_ms=... timestamp_end=...
     pub fn write_stage_footer(&mut self, exit_code: Option<i32>, success: bool, duration_ms: u64) -> Result<(), String> {
         self.write_raw("")?; // blank line before footer
         let exit_str = exit_code.map(|c| c.to_string()).unwrap_or_else(|| "none".to_string());
-        let line = format!("[log] exit_code={} success={} duration_ms={} timestamp_end={}", 
+        let line = format!("[farm] exit_code={} success={} duration_ms={} timestamp_end={}", 
             exit_str, success, duration_ms, Self::timestamp());
         self.write_raw(&line)
     }
@@ -452,13 +454,13 @@ mod tests {
         logger.flush().unwrap();
 
         let content = fs::read_to_string(temp_dir.path().join("build_debug.log")).unwrap();
-        assert!(content.contains("[log] stage=build variant=debug timestamp_start="));
-        assert!(content.contains("[log] cmd=/bin/sh -c echo hello"));
+        assert!(content.contains("[farm] stage=build variant=debug timestamp_start="));
+        assert!(content.contains("[farm] cmd=/bin/sh -c echo hello"));
         assert!(content.contains("hello"));
         assert!(content.contains("warning text"));
         assert!(!content.contains("[stdout]"), "streamed log must not emit [stdout] framing, got:\n{}", content);
         assert!(!content.contains("[stderr]"), "streamed log must not emit [stderr] framing, got:\n{}", content);
-        assert!(content.contains("[log] exit_code=0 success=true duration_ms=42 timestamp_end="));
+        assert!(content.contains("[farm] exit_code=0 success=true duration_ms=42 timestamp_end="));
     }
 
     #[test]
@@ -524,7 +526,7 @@ mod tests {
         let stderr_content = fs::read_to_string(&stderr_path).unwrap();
 
         // Header goes to both files; each stream's line lands only in its file.
-        assert!(stdout_content.contains("[log] stage=build"));
+        assert!(stdout_content.contains("[farm] stage=build"));
         assert!(stdout_content.contains("Hello from stdout"));
         assert!(!stdout_content.contains("Warning message"), "stderr line must not land in stdout file");
         assert!(stderr_content.contains("Warning message"));

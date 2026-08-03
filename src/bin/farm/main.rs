@@ -132,6 +132,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 only,
                 split_streams,
                 no_cache,
+                non_interactive,
                 verbose: args.verbose,
                 command: None,
             };

@@ -92,8 +92,25 @@ pub(crate) fn handle_execute_command(args: Args) -> Result<(), Box<dyn std::erro
         std::process::exit(1);
     }
     
+    // Resolve interactive execution: on by default, but only when farm is
+    // actually attached to a controlling TTY (stdin+stdout), and never when a
+    // tool/buddy passed --non-interactive. The TTY guard is belt-and-suspenders:
+    // head-less runs (farm-buddy/CI) land non-interactive automatically, and a
+    // missing TTY can't be inherited anyway. See ADR-081.
+    let interactive = !args.non_interactive
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+
+    // A PTY exposes a single merged stream, so per-stream splitting is
+    // impossible in interactive mode. Fail loudly rather than silently ignore.
+    if interactive && args.split_streams {
+        eprintln!("❌ --split-streams cannot be combined with interactive execution (a PTY merges stdout and stderr).");
+        eprintln!("   Pass --non-interactive to keep streams split.");
+        std::process::exit(1);
+    }
+
     // Execute the plan (skip_deps=true when --only/-1 is specified)
-    match executor.execute_plan(&plan, &target, &variant, args.silent, &args.log_output, args.only, args.split_streams, args.no_cache, args.build_id.as_deref()) {
+    match executor.execute_plan(&plan, &target, &variant, args.silent, &args.log_output, args.only, args.split_streams, args.no_cache, interactive, args.build_id.as_deref()) {
         Ok(result) => {
             if result.success {
                 println!("✅ Farm operation completed successfully!");
