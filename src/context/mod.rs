@@ -493,48 +493,19 @@ pub fn init_run(workspace: &Path, build_id: &str, ctx_name: &str) -> Result<RunP
 
 /// Clean up old run directories, keeping the most recent N runs.
 ///
-/// Removes run directories from `.farm/run/` that exceed the keep count,
-/// ordered by directory modification time (oldest first).
+/// Ordering comes from each run's manifest (falling back to directory mtime),
+/// and the retention safety rules apply: a run that is still executing is never
+/// removed, and the newest failure of each goal survives. Since ADR 0001 every
+/// invocation has its own run directory, so a plain newest-N-by-mtime sweep
+/// could delete the directory of a build that is running right now.
 pub fn cleanup_old_runs(workspace: &Path, keep_count: usize) -> Result<usize> {
-    let run_dir = workspace.join(".farm").join("run");
-    
-    if !run_dir.exists() {
+    let farm_dir = workspace.join(".farm");
+
+    if !farm_dir.join("run").exists() {
         return Ok(0);
     }
 
-    // Collect all run directories with their modification times
-    let mut runs: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
-    
-    for entry in fs::read_dir(&run_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        
-        // Skip non-directories
-        if !path.is_dir() {
-            continue;
-        }
-        
-        // Skip if we can't get metadata
-        let mtime = match entry.metadata().and_then(|m| m.modified()) {
-            Ok(time) => time,
-            Err(_) => continue,
-        };
-        
-        runs.push((path, mtime));
-    }
-
-    // Sort by modification time (newest first)
-    runs.sort_by(|a, b| b.1.cmp(&a.1));
-
-    // Remove directories beyond the keep count
-    let mut removed = 0;
-    for (path, _) in runs.into_iter().skip(keep_count) {
-        if fs::remove_dir_all(&path).is_ok() {
-            removed += 1;
-        }
-    }
-
-    Ok(removed)
+    Ok(crate::retention::prune_all(&farm_dir, keep_count).removed.len())
 }
 
 // ============================================================================

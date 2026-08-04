@@ -30,6 +30,24 @@ pub enum VcsRef {
     // Future: Mercurial, SVN, etc.
 }
 
+/// Lifecycle state of a run.
+///
+/// The manifest is written twice: a stub at run start carrying `Running`, and
+/// the full manifest at completion carrying `Ok` or `Fail`. Without the stub a
+/// crashed run and a currently-executing run are indistinguishable — both are
+/// just a run directory with no manifest — which retention and `farm log` both
+/// need to tell apart. See ADR 0001.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunStatus {
+    /// The run is executing (or died before it could finish).
+    Running,
+    /// The run completed successfully.
+    Ok,
+    /// The run completed with a failure.
+    Fail,
+}
+
 /// Replay manifest capturing complete build execution state.
 ///
 /// Used to reproduce builds with identical environment and validate
@@ -63,7 +81,19 @@ pub struct ReplayManifest {
     
     /// ISO 8601 timestamp when the build was created
     pub created_at: String,
-    
+
+    /// Lifecycle state. `None` in schema v2 manifests, which predate the field
+    /// and were only ever written after completion — resolve those through
+    /// [`ReplayManifest::run_status`], which falls back to `success`.
+    #[serde(default)]
+    pub status: Option<RunStatus>,
+
+    /// True when the run executed through a PTY. Recorded because a PTY exposes
+    /// a single stream, so stdout and stderr are merged and the resulting log is
+    /// not structurally comparable to a non-interactive run of the same goal.
+    #[serde(default)]
+    pub interactive: bool,
+
     /// Manifest schema version for forward compatibility
     pub schema_version: u32,
 }
@@ -122,10 +152,55 @@ pub struct TaskManifest {
 }
 
 impl ReplayManifest {
-    /// Current schema version
-    pub const SCHEMA_VERSION: u32 = 2;
-    
+    /// Current schema version.
+    ///
+    /// v3 added `status` and `interactive`. Both carry `#[serde(default)]`, so
+    /// v2 manifests still deserialize.
+    pub const SCHEMA_VERSION: u32 = 3;
+
+    /// Create the run-start stub, recording only what is known before any work
+    /// happens. Rewritten in full by [`ReplayManifest::from_execution`] when the
+    /// run completes; a stub left behind with `Running` marks a crashed run.
+    ///
+    /// VCS detection is deliberately skipped here — it spawns a `git` process,
+    /// and paying that at run start to fill a field the final write overwrites
+    /// anyway is not worth it.
+    pub fn running(
+        build_id: &str,
+        goal: &str,
+        variant: &str,
+        interactive: bool,
+        started_at: std::time::SystemTime,
+    ) -> Self {
+        Self {
+            build_id: build_id.to_string(),
+            vcs_ref: None,
+            goal: goal.to_string(),
+            variant: variant.to_string(),
+            operations: Vec::new(),
+            environment: BTreeMap::new(),
+            success: false,
+            duration_ms: 0,
+            created_at: chrono::DateTime::<chrono::Utc>::from(started_at).to_rfc3339(),
+            status: Some(RunStatus::Running),
+            interactive,
+            schema_version: Self::SCHEMA_VERSION,
+        }
+    }
+
+    /// Lifecycle state, resolving v2 manifests that predate the `status` field.
+    /// Those were only ever written after completion, so `success` carries the
+    /// true outcome.
+    pub fn run_status(&self) -> RunStatus {
+        self.status.unwrap_or(if self.success {
+            RunStatus::Ok
+        } else {
+            RunStatus::Fail
+        })
+    }
+
     /// Create a new manifest from execution result
+    #[allow(clippy::too_many_arguments)]
     pub fn from_execution(
         build_id: &str,
         goal: &str,
@@ -133,9 +208,14 @@ impl ReplayManifest {
         result: &ExecutionResult,
         environment: std::collections::HashMap<String, String>,
         workspace: &Path,
+        interactive: bool,
+        started_at: std::time::SystemTime,
     ) -> Self {
         let vcs_ref = detect_vcs_ref(workspace);
-        let created_at = chrono::Utc::now().to_rfc3339();
+        // Run *start*, not completion: the stub written at run start carries the
+        // same instant, so `created_at` orders runs consistently whether they are
+        // still running or already finished.
+        let created_at = chrono::DateTime::<chrono::Utc>::from(started_at).to_rfc3339();
         
         let operations = result.executed_stages.iter()
             .map(OperationManifest::from_result)
@@ -154,6 +234,12 @@ impl ReplayManifest {
             success: result.success,
             duration_ms: result.total_duration_ms,
             created_at,
+            status: Some(if result.success {
+                RunStatus::Ok
+            } else {
+                RunStatus::Fail
+            }),
+            interactive,
             schema_version: Self::SCHEMA_VERSION,
         }
     }
@@ -406,9 +492,11 @@ mod tests {
             success: true,
             duration_ms: 1500,
             created_at: "2025-01-15T10:30:00Z".to_string(),
-            schema_version: 2,
+            status: Some(RunStatus::Ok),
+            interactive: false,
+            schema_version: ReplayManifest::SCHEMA_VERSION,
         };
-        
+
         let json = serde_json::to_string_pretty(&manifest).unwrap();
         let parsed: ReplayManifest = serde_json::from_str(&json).unwrap();
         
@@ -461,12 +549,53 @@ mod tests {
             success: false,
             duration_ms: 700,
             created_at: "2025-01-15T10:30:00Z".to_string(),
-            schema_version: 2,
+            status: Some(RunStatus::Fail),
+            interactive: false,
+            schema_version: ReplayManifest::SCHEMA_VERSION,
         };
-        
+
         let summary = manifest.summary();
         assert!(summary.contains("FAILED"));
         assert!(summary.contains("unit-tests: ✓"));
         assert!(summary.contains("integration: ✗"));
+    }
+
+    /// v2 manifests have no `status` field. They were only ever written after a
+    /// run finished, so `run_status` must resolve them through `success` rather
+    /// than reporting them as still running.
+    #[test]
+    fn legacy_v2_manifest_resolves_status_from_success() {
+        let v2 = r#"{
+            "build_id": "old-build",
+            "goal": "test",
+            "variant": "default",
+            "operations": [],
+            "environment": {},
+            "success": false,
+            "duration_ms": 42,
+            "created_at": "2025-01-15T10:30:00Z",
+            "schema_version": 2
+        }"#;
+
+        let parsed: ReplayManifest = serde_json::from_str(v2).unwrap();
+        assert_eq!(parsed.status, None);
+        assert_eq!(parsed.run_status(), RunStatus::Fail);
+        assert!(!parsed.interactive);
+    }
+
+    #[test]
+    fn running_stub_reports_running() {
+        let stub = ReplayManifest::running(
+            "b-1",
+            "test",
+            "default",
+            true,
+            std::time::SystemTime::UNIX_EPOCH,
+        );
+
+        assert_eq!(stub.run_status(), RunStatus::Running);
+        assert!(stub.interactive);
+        assert!(!stub.success);
+        assert_eq!(stub.created_at, "1970-01-01T00:00:00+00:00");
     }
 }

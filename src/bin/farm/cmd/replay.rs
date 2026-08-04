@@ -120,7 +120,7 @@ pub(crate) fn handle_replay_command(
     
     if dry_run {
         eprintln!("🔍 Dry run - would execute:");
-        eprintln!("   FARM_BUILD_ID={} FARM_BUILD_DIR={} farm run {} --variant {} -f {}",
+        eprintln!("   FARM_REPLAY_OF={} FARM_BUILD_DIR={} farm run {} --variant {} -f {}",
             work.build_id,
             build_dir.display(),
             work.goal,
@@ -129,10 +129,16 @@ pub(crate) fn handle_replay_command(
         );
         return Ok(());
     }
-    
-    // Execute farm run with environment variables set
+
+    // Execute farm run with environment variables set.
+    //
+    // `FARM_BUILD_ID` is deliberately *not* forwarded. Doing so would put the
+    // replay in the source run's directory and overwrite the very run being
+    // replayed — the clobbering ADR 0001 exists to prevent. A replay is a new
+    // attempt: it gets its own run directory and its own entry in the history,
+    // with `FARM_REPLAY_OF` recording where it came from.
     use std::process::Command;
-    
+
     let status = Command::new(std::env::current_exe()?)
         .args([
             "run",
@@ -142,8 +148,9 @@ pub(crate) fn handle_replay_command(
             "-f",
             farmfile.to_str().unwrap_or("Farmfile"),
         ])
-        .env("FARM_BUILD_ID", &work.build_id)
+        .env("FARM_REPLAY_OF", &work.build_id)
         .env("FARM_BUILD_DIR", &build_dir)
+        .env_remove("FARM_BUILD_ID")
         .current_dir(&workspace)
         .status()
         .map_err(|e| format!("Failed to execute farm run: {}", e))?;
@@ -159,26 +166,49 @@ pub(crate) fn handle_replay_command(
 /// Resolve the build directory path from user input.
 ///
 /// Supports:
-/// - Full path: /path/to/.farm/ops/build-id
-/// - Relative path: .farm/ops/build-id
-/// - Just build-id: looks in .farm/ops/{build-id} in current directory
+/// - Full path: `/path/to/.farm/run/build-id`
+/// - Relative path: `.farm/run/build-id`
+/// - A build ID: the matching `.farm/run/{build-id}`
+/// - A goal name: the most recent run of that goal
+///
+/// The goal-name form is what keeps `farm replay test` working. Before ADR 0001
+/// the local build ID *was* the goal name, so users typed the goal; now that run
+/// directories are per-invocation, that has to be resolved through the manifests
+/// rather than assumed from the directory name.
 pub(crate) fn resolve_replay_build_dir(input: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let path = PathBuf::from(input);
-    
+
     // If it's an absolute path or starts with . or contains path separators, use as-is
     if path.is_absolute() || input.starts_with('.') || input.contains('/') || input.contains('\\') {
         return Ok(path.canonicalize().unwrap_or(path));
     }
-    
-    // Otherwise, treat as build-id and look in .farm/ops/
+
     let cwd = std::env::current_dir()?;
-    let ops_path = cwd.join(".farm").join("ops").join(input);
-    
-    if ops_path.exists() {
-        return Ok(ops_path);
+    let farm_dir = cwd.join(".farm");
+
+    // Build ID first, then newest run of a goal by that name.
+    if let Some(run) = farm::runs::resolve(&farm_dir, input, None) {
+        return Ok(run.dir);
     }
-    
-    // Fall back to treating as relative path
-    Ok(path)
+
+    // Nothing matched. Name what *is* available rather than just failing —
+    // build IDs are generated now, so the user cannot be expected to guess one.
+    let available = farm::runs::list_runs(&farm_dir);
+    if available.is_empty() {
+        return Err(format!("No run found for '{}', and no runs are recorded yet", input).into());
+    }
+
+    let mut known: Vec<String> = available
+        .iter()
+        .filter_map(|run| run.goal().map(|g| g.to_string()))
+        .collect();
+    known.dedup();
+
+    Err(format!(
+        "No run found for '{}'. Recorded goals: {}",
+        input,
+        known.join(", ")
+    )
+    .into())
 }
 

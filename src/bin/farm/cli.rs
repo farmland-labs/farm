@@ -277,7 +277,7 @@ pub(crate) enum Commands {
     
     /// Re-run a build from preserved ops directory
     Replay {
-        /// Path to build directory (.farm/ops/{build-id}/ or just build-id)
+        /// Goal name, build ID, or path to a run directory
         build_dir: String,
         
         /// Dry run - show what would be executed without running
@@ -289,6 +289,62 @@ pub(crate) enum Commands {
         farmfile: Option<PathBuf>,
     },
     
+    /// Show, list or diff the logs of previous runs
+    ///
+    /// Every run keeps its own log, so a failing run can be compared against
+    /// the last working one. Run history is bounded automatically.
+    #[command(after_help = "\
+EXAMPLES:
+    farm log                     Log of the most recent run, whatever the goal
+    farm log test                Log of the most recent `test` run
+    farm log test --list         Recent `test` runs, newest first
+    farm log test --diff         Compare the last two `test` runs
+    farm log test --diff --against 3   Compare against 3 runs back
+    farm log test --follow       Follow a run as it executes")]
+    Log {
+        /// Goal to show logs for. Omit for the most recent run of any goal.
+        goal: Option<String>,
+
+        /// Restrict to one variant. Omit to match any.
+        #[arg(long)]
+        variant: Option<String>,
+
+        /// List recent runs instead of showing a log
+        #[arg(long, short = 'l')]
+        list: bool,
+
+        /// Diff the latest run against an earlier one
+        #[arg(long, short = 'd')]
+        diff: bool,
+
+        /// How many runs back to diff against (default: the previous run)
+        #[arg(long, default_value = "1")]
+        against: usize,
+
+        /// Follow the log as it is written
+        #[arg(long, short = 'F')]
+        follow: bool,
+
+        /// Show the log exactly as stored, skipping normalization
+        #[arg(long)]
+        raw: bool,
+
+        /// Drop farm's own `[farm]` framing lines, leaving only task output
+        #[arg(long)]
+        only_output: bool,
+
+        /// Print the log file's path instead of its contents
+        ///
+        /// The path is an internal implementation detail and will change
+        /// between versions; do not script against it.
+        #[arg(long)]
+        path: bool,
+
+        /// Number of runs to list (with --list)
+        #[arg(long, short = 'n', default_value = "10")]
+        limit: usize,
+    },
+
     /// Manage target cache
     Cache {
         #[command(subcommand)]

@@ -19,6 +19,7 @@ use crate::env::CapturedEnv;
 use crate::build_logger::{BuildLogger, LogMode};
 use crate::cache::{CacheLookup, CacheResult, compute_target_key, hash_file_patterns};
 use crate::manifest::ReplayManifest;
+use crate::retention::{self, RetentionPolicy};
 use crate::work_hash::compute_work_hash;
 use crate::write_farm_notice;
 use crate::vendor::parse::{CacheConfig, EnvValue};
@@ -137,19 +138,46 @@ impl Executor {
         // Determine build ID for run directory:
         // 1. CLI --build-id flag (passed as parameter)
         // 2. FARM_BUILD_ID env var (set by the CI runner)
-        // 3. {goal} for local dev (goal name used directly as build ID)
+        // 3. A freshly generated per-run ID for local dev
+        //
+        // The local fallback used to be the bare goal name, which meant every run
+        // of a goal reused one directory and destroyed the previous run's log,
+        // manifest and work.json. See ADR 0001.
         let effective_build_id = build_id
             .map(|s| s.to_string())
             .or_else(|| std::env::var("FARM_BUILD_ID").ok())
-            .unwrap_or_else(|| goal.to_string());
-        
+            .unwrap_or_else(|| generate_build_id(goal));
+
         let run_dir = farm_dir.join("run").join(&effective_build_id);
         let log_dir = run_dir.join("log");
         std::fs::create_dir_all(&log_dir).map_err(|e| format!("Failed to create log directory: {}", e))?;
-        
+
+        // Stub manifest, so an in-flight run is discoverable and a crashed one is
+        // distinguishable from a running one. Rewritten in full at completion.
+        // Best-effort: failing to write it must not abort the build.
+        if let Err(e) = ReplayManifest::running(&effective_build_id, goal, variant, interactive, start_time)
+            .write_to(&run_dir)
+        {
+            warn!(error = %e, "Failed to write run-start manifest");
+        }
+
+        // Prune older runs of this goal + variant. Runs *after* the stub above,
+        // so the run about to execute is protected by its own `running` status.
+        // Housekeeping failures are logged, never fatal.
+        let policy = RetentionPolicy::default();
+        let pruned = retention::prune(&farm_dir, goal, variant, &policy);
+        let orphans = retention::prune_orphans(&farm_dir, &policy);
+        let removed = pruned.removed.len() + orphans.removed.len();
+        if removed > 0 {
+            debug!(removed = removed, kept = pruned.kept, "Pruned old run directories");
+        }
+        for error in pruned.errors.iter().chain(orphans.errors.iter()) {
+            warn!(error = %error, "Failed to prune run directory");
+        }
+
         // Create build logger
         let logger = BuildLogger::new(&log_dir, goal, variant, log_mode)?;
-        
+
         let mut exec_ctx = ExecutionContext {
             target: goal.to_string(),
             variant: variant.to_string(),
@@ -237,6 +265,8 @@ impl Executor {
             &result,
             build_env,
             &self.workspace,
+            interactive,
+            start_time,
         );
         
         // Write manifest.json
@@ -606,6 +636,20 @@ impl std::fmt::Debug for Executor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Executor in workspace: {:?}", self.workspace)
     }
+}
+
+/// Generate the per-run build ID used when neither `--build-id` nor
+/// `FARM_BUILD_ID` supplies one: `{goal}-{timestamp}-{suffix}`.
+///
+/// The goal keeps the directory recognisable while poking around by hand; the
+/// millisecond timestamp keeps it sortable; the UUIDv7 tail rules out collisions
+/// between runs of the same goal started in the same millisecond. Ordering is
+/// still taken from manifest metadata, never from this name — the format stays
+/// free to change (ADR 0001).
+fn generate_build_id(goal: &str) -> String {
+    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3f");
+    let uuid = uuid::Uuid::now_v7().simple().to_string();
+    format!("{}-{}Z-{}", goal, ts, &uuid[uuid.len() - 6..])
 }
 
 #[cfg(test)]

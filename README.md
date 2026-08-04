@@ -172,8 +172,9 @@ No parcels created, no context needed. Fast iteration.
 
 ### Build Artifacts Location
 
-Each run writes under `.farm/run/<build-id>/` (the build-id defaults to the
-goal name, or is set with `--build-id` / `FARM_BUILD_ID`):
+Every run writes its own directory under `.farm/run/<build-id>/`, so running a
+goal twice no longer destroys the first run's log. The build-id is generated per
+run, or set explicitly with `--build-id` / `FARM_BUILD_ID`:
 
 ```
 .farm/run/<build-id>/
@@ -183,18 +184,45 @@ goal name, or is set with `--build-id` / `FARM_BUILD_ID`):
 └── work.json                    # used by `farm replay`
 ```
 
-Output is **streamed into the log file line-by-line** as it arrives, so
-`tail -f` works on a build in progress. The on-disk log is plain text (ANSI
-colors stripped); colors still show live on the console.
+Output is **streamed into the log file line-by-line** as it arrives, so a build
+in progress can be followed live. The on-disk log is plain text (ANSI colors
+stripped); colors still show live on the console.
+
+Run history is bounded automatically: the last 5 runs per goal and variant are
+kept, anything older than 7 days is discarded, and the most recent *failure*
+always survives — the run you most likely want to read is the one plain
+keep-the-last-5 would throw away.
+
+These paths are internal and change between versions. Read them through
+`farm log` rather than constructing them.
+
+### Reading Run Logs
+
+```bash
+farm log                          # log of the most recent run, whatever the goal
+farm log build                    # log of the most recent `build` run
+farm log build --list             # recent `build` runs, newest first
+farm log build --diff             # compare the last two runs
+farm log build --diff --against 3 # compare against 3 runs back
+farm log build --follow           # follow a run as it executes
+```
+
+Diffs are normalized first: timestamps, durations, run directory names and
+progress-bar redraws are stripped, so what remains is what actually changed
+between two runs. `--raw` shows the log exactly as stored, and `--only-output`
+drops farm's own `[farm]` framing lines.
 
 ### Replay a Build
 
 ```bash
-farm replay <build-id>            # Re-run from a preserved run directory
+farm replay <goal>                # Re-run the most recent run of a goal
+farm replay <build-id>            # Re-run a specific run
 farm replay --dry-run <build-id>  # Show what would run
 ```
 
-`<build-id>` may be a build id or a path to the build directory.
+The argument may be a goal name, a build id, or a path to a run directory. A
+replay is a new attempt: it gets its own run directory rather than overwriting
+the run it replays, with `FARM_REPLAY_OF` recording where it came from.
 
 ### Contexts
 
@@ -262,7 +290,8 @@ for input gets EOF and fails fast rather than hanging.
 | `farm plan` | Display the execution plan |
 | `farm plan --format dot` | Output plan in DOT graph format |
 | `farm ctx` | Manage contexts (build-state isolation) — see [Contexts](#contexts) |
-| `farm replay <build-id>` | Re-run a build from a preserved run directory |
+| `farm log [goal]` | Show, list or diff the logs of previous runs |
+| `farm replay <goal\|build-id>` | Re-run a build from a preserved run directory |
 | `farm cache list` | List cached targets |
 | `farm cache get <key>` | Show a cache entry by key prefix |
 | `farm cache stats` | Show cache statistics |

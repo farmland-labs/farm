@@ -1,9 +1,25 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 
+
 //! Operations run non-interactively: the child's stdin is `/dev/null`, so a
 //! process that reads input gets EOF immediately (it fails fast instead of
 //! deadlocking on an invisible prompt), and farm's own stdin is never
 //! forwarded into the build.
+
+/// Read the combined log of the most recent run of `goal`.
+///
+/// Run directories are per-invocation since ADR 0001, so their names are
+/// generated; tests resolve them through the manifest rather than assuming
+/// `.farm/run/{goal}/`.
+fn latest_log(workspace: &std::path::Path, goal: &str) -> String {
+    let run = farm::runs::find_runs(&workspace.join(".farm"), goal, None)
+        .into_iter()
+        .next()
+        .expect("run should be recorded");
+    let path = run.combined_log().expect("combined log should exist");
+    std::fs::read_to_string(path).expect("combined log should be readable")
+}
+
 
 use std::fs;
 use std::io::Write;
@@ -66,7 +82,7 @@ fn test_parent_stdin_is_not_forwarded_to_child() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let log = fs::read_to_string(ws.join(".farm/run/echo_in/log/echo_in_default.log")).unwrap();
+    let log = latest_log(ws, "echo_in");
     assert!(
         !log.contains("SHOULD_NOT_APPEAR"),
         "parent stdin must not be forwarded into the child:\n{log}"

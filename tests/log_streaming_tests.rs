@@ -1,7 +1,39 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 
+
 //! Integration tests: command output is streamed line-by-line into the build
 //! log file (merged combined log, and separated streams in split mode).
+
+/// Read the combined log of the most recent run of `goal`.
+///
+/// Run directories are per-invocation since ADR 0001, so their names are
+/// generated; tests resolve them through the manifest rather than assuming
+/// `.farm/run/{goal}/`.
+fn latest_log(workspace: &std::path::Path, goal: &str) -> String {
+    let run = farm::runs::find_runs(&workspace.join(".farm"), goal, None)
+        .into_iter()
+        .next()
+        .expect("run should be recorded");
+    let path = run.combined_log().expect("combined log should exist");
+    std::fs::read_to_string(path).expect("combined log should be readable")
+}
+
+/// Split-stream log pair (`*_stdout.log`, `*_stderr.log`) of the most recent
+/// run of `goal`.
+fn latest_split_logs(workspace: &std::path::Path, goal: &str, variant: &str) -> (String, String) {
+    let run = farm::runs::find_runs(&workspace.join(".farm"), goal, None)
+        .into_iter()
+        .next()
+        .expect("run should be recorded");
+    let read = |suffix: &str| {
+        let path = run
+            .log_dir()
+            .join(format!("{}_{}_{}.log", goal, variant, suffix));
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{} log should exist at {}: {}", suffix, path.display(), e))
+    };
+    (read("stdout"), read("stderr"))
+}
 
 use std::fs;
 use std::process::Command;
@@ -51,9 +83,7 @@ work: printf 'line1\nline2\nline3\n'
         String::from_utf8_lossy(&output.stderr)
     );
 
-    // Default build_id is the goal name; combined log is {goal}_{variant}.log.
-    let log = fs::read_to_string(ws.join(".farm/run/greet/log/greet_default.log"))
-        .expect("combined log file should exist");
+    let log = latest_log(ws, "greet");
 
     for line in ["line1", "line2", "line3"] {
         assert!(log.contains(line), "log missing {line}:\n{log}");
@@ -105,10 +135,7 @@ work: echo OUTLINE; echo ERRLINE 1>&2
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let stdout_log = fs::read_to_string(ws.join(".farm/run/greet/log/greet_default_stdout.log"))
-        .expect("stdout log should exist");
-    let stderr_log = fs::read_to_string(ws.join(".farm/run/greet/log/greet_default_stderr.log"))
-        .expect("stderr log should exist");
+    let (stdout_log, stderr_log) = latest_split_logs(ws, "greet", "default");
 
     // The cmd header (written to both files) echoes the full command, so both
     // markers appear once there. Correct separation means the *output* line
