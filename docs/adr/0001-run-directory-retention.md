@@ -80,7 +80,7 @@ The on-disk layout stays internal. Anything users need is exposed as a command:
 | `farm log [<goal>]` | Show the latest log; no goal means the most recent run of any goal (`--variant`, `--follow`) |
 | `farm log <goal> --list` | Recent runs: time, status, duration, mode |
 | `farm log <goal> --diff [--against N]` | Diff latest against the previous run |
-| `farm clean --runs [--all]` | Manual prune |
+| `farm ctx run clean -k N -y` | Manual prune (already existed) |
 
 `--path` exists as a deliberate escape hatch and prints a warning that the path is unstable
 and must not be scripted against.
@@ -100,12 +100,24 @@ none.
 **Shared resolver.** Both front doors sit on one module: *given a goal and variant, return
 the matching run directories newest-first, from manifest metadata*. No duplicated logic.
 
-**`farm replay` must use it too.** `farm replay <build_dir>` takes a build-id positional
-([src/bin/farm/cli.rs:279-281](../../src/bin/farm/cli.rs#L279-L281)). Today `farm replay test`
-works *only because* `build_id` happens to equal the goal name; unique ids break it. This is
-exactly the class of breakage accepted for filesystem paths but explicitly **not** for
-commands. `farm replay` therefore accepts a goal name and resolves to the latest run, with
-explicit build ids continuing to work unchanged.
+**`farm replay` must use it too.** `farm replay <build_dir>` takes a build-id positional.
+The intent was that `farm replay test` works because `build_id` equals the goal name, which
+unique ids would break — this is exactly the class of breakage accepted for filesystem paths
+but explicitly **not** for commands. `farm replay` therefore accepts a goal name and resolves
+to the latest run, with explicit build ids continuing to work unchanged.
+
+*Found during implementation:* it did not work beforehand either. `resolve_replay_build_dir`
+looked under `.farm/ops/{build-id}` — a path nothing has written in the repository's entire
+history; run state has always lived under `.farm/run/`. Every bare `farm replay <name>` failed
+with "Build directory not found". The resolver fixes both problems at once, and the dead
+`.farm/ops` lookup was removed rather than kept as a fallback for directories that cannot
+exist.
+
+**A replay is a new run.** `farm replay` previously forwarded `FARM_BUILD_ID` from the source
+run, which under per-invocation directories would put the replay in the source's directory
+and overwrite the very run being replayed — reintroducing the clobbering this ADR exists to
+prevent. It no longer does: a replay gets its own run directory and its own history entry,
+with `FARM_REPLAY_OF` recording its origin.
 
 ### 6. Retention policy
 
@@ -123,7 +135,20 @@ Pruning runs at the start of a build, scoped to the matching `goal` + `variant` 
 `read_dir`, no global sweep, no background process. Runs with an explicit `--build-id` prune
 under the same rules — exempting them would leave CI unbounded, which is one of the problems
 being fixed. A run whose manifest says `running` is never pruned; a manifest-less directory
-is treated as crashed and pruned by mtime.
+is treated as crashed and pruned by mtime once past the maximum age.
+
+**"No manifest" and "manifest says running" are different states**, and conflating them was a
+mistake worth recording. Automatic pruning wants the conservative reading — a directory with
+no manifest might belong to a build that started microseconds ago, so leave it alone and let
+the age-gated orphan sweep handle it. An explicitly requested cleanup needs the opposite:
+`farm ctx run init` creates run directories that never carry a manifest, and if those were
+permanently protected no cleanup could ever remove them. The resolver therefore exposes both
+readings, and each caller takes the one that fits.
+
+The manual `farm ctx run clean -k N` keeps its global keep-count contract but now orders runs
+by manifest and honours the two safety rules. Previously it sorted by mtime with no notion of
+run state, which under per-invocation directories meant a cleanup issued mid-build could
+delete the running build's own directory.
 
 ### 7. Diffing: `similar`, with read-side normalization
 
@@ -262,9 +287,12 @@ None outstanding. Resolved during review: command naming (decision 5), diff rend
 
 ## Implementation order
 
-1. Unique local `build_id`; write the manifest stub at run start (with `interactive`) and
-   rewrite at completion.
-2. Shared run resolver; repoint `farm replay` at it so `farm replay <goal>` keeps working.
-3. Pruning (keep-N, max age, keep-newest-failure) at run start.
-4. `farm log`, `--list`, and `--diff` with the normalization layer.
+1. ✅ Unique local `build_id`; write the manifest stub at run start (with `interactive`) and
+   rewrite at completion. `manifest.json` gained `status` and `interactive`, schema v3;
+   v2 manifests still deserialize and resolve their status from `success`.
+2. ✅ Shared run resolver (`src/runs.rs`); repoint `farm replay` at it.
+3. ✅ Pruning (keep-N, max age, keep-newest-failure) at run start (`src/retention.rs`), plus
+   the age-gated orphan sweep and the rewritten `farm ctx run clean`.
+4. ✅ `farm log`, `--list`, `--diff`, `--follow`, with the normalization layer
+   (`src/log_view.rs`).
 5. Identical-log deduplication and a configuration surface, if demand appears.

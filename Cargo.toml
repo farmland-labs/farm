@@ -57,6 +57,7 @@ toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.6", features = ["v4", "v7", "serde"] }
+similar = "3.1.1"
 
 # Interactive-mode stdin teardown + terminal-resize (SIGWINCH) forwarding are
 # Unix-only; the Windows path (ConPTY) is validated separately — see ADR-081.

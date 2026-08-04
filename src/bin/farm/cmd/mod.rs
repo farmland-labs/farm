@@ -7,5 +7,6 @@ pub(crate) mod branch;
 pub(crate) mod cache;
 pub(crate) mod ctx;
 pub(crate) mod execute;
+pub(crate) mod log;
 pub(crate) mod plan;
 pub(crate) mod replay;

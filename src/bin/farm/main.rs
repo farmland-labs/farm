@@ -12,6 +12,7 @@ mod cmd;
 use crate::cli::{Args, Commands, resolve_farmfile};
 use crate::cmd::cache::handle_cache_command;
 use crate::cmd::ctx::handle_ctx_command;
+use crate::cmd::log::handle_log_command;
 use crate::cmd::plan::handle_plan_command;
 use crate::cmd::replay::handle_replay_command;
 use crate::cmd::execute::handle_execute_command;
@@ -178,6 +179,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::Replay { build_dir, dry_run, farmfile }) => {
             handle_replay_command(&build_dir, dry_run, farmfile)
+        }
+        Some(Commands::Log { goal, variant, list, diff, against, follow, raw, only_output, path, limit }) => {
+            handle_log_command(crate::cmd::log::LogArgs {
+                goal, variant, list, diff, against, follow, raw, only_output, path, limit,
+            })
         }
         Some(Commands::Cache { command }) => {
             handle_cache_command(command)

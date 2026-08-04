@@ -1,15 +1,26 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+
+/// Log directory of the most recent run of `goal`.
+///
+/// Run directories are per-invocation since ADR 0001, so their names are
+/// generated and tests resolve them through the manifest instead of assuming
+/// `.farm/run/{goal}/`.
+fn latest_log_dir(workspace: &Path, goal: &str) -> Option<PathBuf> {
+    farm::runs::find_runs(&workspace.join(".farm"), goal, None)
+        .first()
+        .map(|run| run.log_dir())
+}
 
 /// Clear leaked `FARM_*` env vars once per test process. The
 /// spawned `farm` subprocess inherits the developer's environment;
 /// `FARM_WORKSPACE` from an external launcher would otherwise redirect
-/// it away from our `TempDir` and the assertion
-/// `workspace.join(".farm/run/test/log").exists()` fails because
-/// logs were written to the wrong workspace. See
+/// it away from our `TempDir`, so the run would be recorded in the wrong
+/// workspace and `latest_log_dir` would find nothing. See
 /// `farm/tests/context_integration_tests.rs::isolate_test_env`
 /// for the full rationale.
 fn isolate_test_env() {
@@ -61,7 +72,7 @@ echo "Default mode test"
     assert!(output.status.success(), "Farm execution failed: {}", String::from_utf8_lossy(&output.stderr));
     
     // Check that log files were created
-    let log_dir = workspace.join(".farm/run/test/log");
+    let log_dir = latest_log_dir(workspace, "test").expect("run should be recorded");
     assert!(log_dir.exists(), "Log directory should exist");
     
     // Default file mode now creates combined log (not split stdout/stderr)
@@ -111,7 +122,7 @@ echo "Split mode test"
     assert!(output.status.success(), "Farm execution failed: {}", String::from_utf8_lossy(&output.stderr));
     
     // Check that separate log files were created
-    let log_dir = workspace.join(".farm/run/test/log");
+    let log_dir = latest_log_dir(workspace, "test").expect("run should be recorded");
     assert!(log_dir.exists(), "Log directory should exist");
     
     let stdout_log = log_dir.join("test_debug_stdout.log");
@@ -162,7 +173,7 @@ echo "Hello from stdout test"
     assert!(output.status.success(), "Farm execution failed: {}", String::from_utf8_lossy(&output.stderr));
     
     // Check that NO log files were created
-    let log_dir = workspace.join(".farm/run/test/log");
+    let log_dir = latest_log_dir(workspace, "test").unwrap_or_default();
     if log_dir.exists() {
         let stdout_log = log_dir.join("test_debug_stdout.log");
 
@@ -211,7 +222,7 @@ echo "Hello from none test"
     assert!(output.status.success(), "Farm execution failed: {}", String::from_utf8_lossy(&output.stderr));
     
     // Check that NO meaningful log files were created
-    let log_dir = workspace.join(".farm/run/test/log");
+    let log_dir = latest_log_dir(workspace, "test").unwrap_or_default();
     if log_dir.exists() {
         let stdout_log = log_dir.join("test_debug_stdout.log");
         if stdout_log.exists() {
@@ -289,7 +300,7 @@ echo "Default mode test"
     assert!(output.status.success(), "Farm execution failed: {}", String::from_utf8_lossy(&output.stderr));
     
     // Check that log files were created (default behavior is combined log)
-    let log_dir = workspace.join(".farm/run/test/log");
+    let log_dir = latest_log_dir(workspace, "test").expect("run should be recorded");
     assert!(log_dir.exists(), "Log directory should exist");
     
     let combined_log = log_dir.join("test_debug.log");

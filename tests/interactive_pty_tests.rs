@@ -1,5 +1,6 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 
+
 //! Interactive execution (ADR-081): when `farm` is attached to a controlling
 //! TTY and `--non-interactive` is not passed, operations run through a PTY so
 //! the child sees a real terminal, farm relays keystrokes into it, and a clean
@@ -10,6 +11,21 @@
 //! (the Windows ConPTY path is validated separately, per ADR-081).
 
 #![cfg(unix)]
+
+/// Read the combined log of the most recent run of `goal`.
+///
+/// Run directories are per-invocation since ADR 0001, so their names are
+/// generated; tests resolve them through the manifest rather than assuming
+/// `.farm/run/{goal}/`.
+fn latest_log(workspace: &std::path::Path, goal: &str) -> String {
+    let run = farm::runs::find_runs(&workspace.join(".farm"), goal, None)
+        .into_iter()
+        .next()
+        .expect("run should be recorded");
+    let path = run.combined_log().expect("combined log should exist");
+    std::fs::read_to_string(path).expect("combined log should be readable")
+}
+
 
 use std::fs;
 use std::io::{Read, Write};
@@ -106,7 +122,7 @@ fn interactive_run_forwards_input_to_child_and_logs_it() {
         "child should echo our keystrokes back to the terminal. console:\n{console}"
     );
 
-    let log = fs::read_to_string(ws.join(".farm/run/echo_in/log/echo_in_default.log")).unwrap();
+    let log = latest_log(ws, "echo_in");
     assert!(
         log.contains("hello-from-tty"),
         "the developer's input must round-trip into the tee'd log:\n{log}"
@@ -284,7 +300,7 @@ fn non_interactive_flag_closes_stdin_even_on_a_tty() {
 
     assert!(status.success(), "run should succeed (cat on empty stdin). console:\n{console}");
 
-    let log = fs::read_to_string(ws.join(".farm/run/echo_in/log/echo_in_default.log")).unwrap();
+    let log = latest_log(ws, "echo_in");
     assert!(
         !log.contains("SHOULD_NOT_APPEAR"),
         "--non-interactive must not forward stdin to the child:\n{log}"

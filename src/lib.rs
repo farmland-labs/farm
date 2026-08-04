@@ -62,7 +62,10 @@ pub mod engine;
 pub use tracing::{debug, error, info, trace, warn};
 pub mod vendor;
 pub mod cache;
+pub mod log_view;
 pub mod manifest;
+pub mod retention;
+pub mod runs;
 pub mod work_hash;
 
 // Re-export parser functionality from farm-parse
