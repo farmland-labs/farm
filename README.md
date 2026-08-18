@@ -61,6 +61,39 @@ From the principle its like a Makefile with defined goals, which can be called f
 
 ## Installation
 
+### Install the binary CLI from farmland.rocks
+
+The installer drops farmland stack (farm, farm-buddy, and farm-keygen) into `~/.farmland/bin/` and prints a one-line `PATH` update for your shell.
+No sudo, no admin — binaries live under your home directory.
+
+UNIX/Linux
+
+```bash
+curl -fsSL https://dl.farmland.rocks/install | sh
+```
+
+Windows Powershell
+
+```bash
+irm https://dl.farmland.rocks/install.ps1 | iex
+```
+
+Windows Cmd
+
+```bash
+powershell -ExecutionPolicy Bypass -Command "irm https://dl.farmland.rocks/install.ps1 | iex"
+```
+
+Prefer reading the script first?
+
+```bash
+curl -qL https://dl.farmland.rocks/install.sh | less
+```
+
+### Install from source
+
+If you want to instal it from source, just clone the project and do cargo install.
+
 ```bash
 cargo install --path .
 ```
@@ -91,6 +124,12 @@ farm plan
 
 # View plan in DOT format for visualization
 farm plan --format dot | dot -Tpng > plan.png
+
+# Get the latest log
+farm log
+
+# List the logs currently saved
+farm log -l
 ```
 
 ## Farmfile Format
@@ -200,6 +239,7 @@ These paths are internal and change between versions. Read them through
 
 ```bash
 farm log                          # log of the most recent run, whatever the goal
+farm log -l                       # list the saved logs
 farm log build                    # log of the most recent `build` run
 farm log build --list             # recent `build` runs, newest first
 farm log build --diff             # compare the last two runs
