@@ -19,6 +19,7 @@ mod goal;
 mod cache;
 mod env;
 mod error;
+mod lenient;
 
 use operation::operation_section;
 use variant::variant_section;
@@ -29,9 +30,18 @@ use general::{comment_line, plugin_comment_line};
 use crate::vendor::parse::Plan;
 
 pub use error::{ParseError, ParseErrorKind, ParseResultExt};
+pub use lenient::ParseWarning;
 pub use general::EnvValue;
 
 /// Parse a Farmland Farmfile into an operation `Plan`
+///
+/// Parsing is lenient for forward and backward compatibility: unknown sections,
+/// unknown fields and unrecognised lines are skipped and reported in
+/// [`Plan::warnings`] (see [`ParseWarning`]). It fails only when the file
+/// violates what this parser knows: missing/unsupported `version:`, a known
+/// field with an invalid value, or semantic errors (cycles, unknown
+/// dependencies, duplicates, ...). Callers wanting a clean file treat
+/// non-empty warnings as an error (`farm --strict`).
 pub fn parse_plan(input: &str) -> Result<Plan, ParseError> {
     let mut remaining = input;
     
@@ -69,6 +79,9 @@ pub fn parse_plan(input: &str) -> Result<Plan, ParseError> {
     // Accumulator for plugin comments that precede operations
     let mut pending_plugin_metadata: std::collections::HashMap<String, std::collections::HashMap<String, String>> = 
         std::collections::HashMap::new();
+
+    // Content skipped for compatibility, reported as warnings
+    let mut skipped: Vec<lenient::Skipped> = Vec::new();
     
     // Parse sections manually to avoid many0 issues
     loop {
@@ -105,62 +118,94 @@ pub fn parse_plan(input: &str) -> Result<Plan, ParseError> {
         }
         
         // Try to parse different section types
-        if let Ok((new_input, variant)) = variant_section(remaining) {
+        if let Ok((new_input, (variant, variant_skipped))) = variant_section(remaining) {
             debug!("Parsed variant section: {:?}", variant);
             plan.add_variants(variant)
                 .map_err(|e| ParseError::generic(input, remaining, e))?;
+            skipped.extend(variant_skipped);
             remaining = new_input;
             made_progress = true;
             // variant don't consume plugin metadata, so keep it for the next operation
-        } else if let Ok((new_input, goals)) = goal_section(remaining) {
+        } else if let Ok((new_input, (goals, goal_skipped))) = goal_section(remaining) {
             debug!("Parsed goal section: {:?}", goals);
             plan.goals.extend(goals);
+            skipped.extend(goal_skipped);
             remaining = new_input;
             made_progress = true;
             // Goals don't consume plugin metadata, so keep it for the next operation
-        } else if let Ok((new_input, cache_config)) = cache_section(remaining) {
+        } else if let Ok((new_input, (cache_config, cache_skipped))) = cache_section(remaining) {
             debug!("Parsed cache section: {:?}", cache_config);
             plan.cache = Some(cache_config);
+            skipped.extend(cache_skipped);
             remaining = new_input;
             made_progress = true;
             // Cache doesn't consume plugin metadata
-        } else if let Ok((new_input, env_vars)) = env_section(remaining) {
+        } else if let Ok((new_input, (env_vars, env_skipped))) = env_section(remaining) {
             debug!("Parsed env section: {:?}", env_vars);
             plan.globals.extend(env_vars);
+            skipped.extend(env_skipped);
             remaining = new_input;
             made_progress = true;
             // The [env] section doesn't consume plugin metadata
-        } else if let Ok((new_input, mut operation)) = operation_section(remaining) {
-            debug!("Parsed operation section: {:?}", operation.label);
-            debug!("pending_plugin_metadata before transfer: {:?}", pending_plugin_metadata);
-            
-            // Apply accumulated plugin metadata to this operation
-            for (plugin_name, metadata) in pending_plugin_metadata.drain() {
-                debug!("Transferring metadata for plugin '{}': {:?}", plugin_name, metadata);
-                operation.plugin_metadata
-                    .entry(plugin_name)
-                    .or_insert_with(std::collections::HashMap::new)
-                    .extend(metadata);
+        } else {
+            match operation_section(remaining) {
+                Ok((new_input, (mut operation, operation_skipped))) => {
+                    debug!("Parsed operation section: {:?}", operation.label);
+                    debug!("pending_plugin_metadata before transfer: {:?}", pending_plugin_metadata);
+
+                    // Apply accumulated plugin metadata to this operation
+                    for (plugin_name, metadata) in pending_plugin_metadata.drain() {
+                        debug!("Transferring metadata for plugin '{}': {:?}", plugin_name, metadata);
+                        operation.plugin_metadata
+                            .entry(plugin_name)
+                            .or_default()
+                            .extend(metadata);
+                    }
+
+                    debug!("Operation '{}' final plugin_metadata: {:?}", operation.label, operation.plugin_metadata);
+
+                    plan.add_operation(operation)
+                        .map_err(|e| ParseError::generic(input, remaining, e))?;
+                    skipped.extend(operation_skipped);
+                    remaining = new_input;
+                    made_progress = true;
+                }
+                // A known field with an invalid value: the file violates known syntax
+                Err(nom::Err::Failure(e)) => {
+                    let field = lenient::field_name(e.input).unwrap_or("field");
+                    return Err(ParseError::invalid_syntax(
+                        input,
+                        e.input,
+                        format!("a valid '{}:' value", field),
+                        lenient::first_line(e.input).to_string(),
+                    ));
+                }
+                Err(_) => {}
             }
-            
-            debug!("Operation '{}' final plugin_metadata: {:?}", operation.label, operation.plugin_metadata);
-            
-            plan.add_operation(operation)
-                .map_err(|e| ParseError::generic(input, remaining, e))?;
-            remaining = new_input;
-            made_progress = true;
         }
-        
-        // If no progress was made, we're stuck
+
+        // Nothing known here: skip it for compatibility and report it
         if !made_progress {
-            let found = remaining.lines().next().unwrap_or("").to_string();
-            return Err(ParseError::invalid_syntax(
-                input, 
-                remaining, 
-                "a valid section ([variant], [goal], [cache], [env], or [operation.name])".to_string(),
-                found
-            ));
+            if remaining.starts_with('[') {
+                skipped.push(lenient::Skipped::new(
+                    remaining,
+                    format!("unknown section '{}'", lenient::first_line(remaining)),
+                ));
+                remaining = lenient::skip_section(remaining);
+                // Decorators directly above belonged to the skipped section
+                pending_plugin_metadata.clear();
+            } else {
+                remaining = lenient::skip_unrecognised(remaining, "outside any section", &mut skipped);
+            }
         }
+    }
+
+    plan.warnings = skipped
+        .into_iter()
+        .map(|s| ParseWarning { line: error::line_of(input, s.at), message: s.message })
+        .collect();
+    for warning in &plan.warnings {
+        debug!("Farmfile warning: {}", warning);
     }
     
     // Build the dependency graph
@@ -640,6 +685,167 @@ build: build_project
         
         assert_eq!(plan.goals.len(), 1);
         assert_eq!(plan.goals.get("build"), Some(&"build_project".to_string()));
+    }
+
+    #[test]
+    fn test_parse_plan_short_form_syntax() {
+        // `[.name]` headers, multi-line `work:` blocks, `help:` and `!` excludes, mixed
+        // with the long `[operation.name]` form.
+        let input = r#"version: 1
+
+[goal]
+build: build_workspace
+
+[operation.setup]
+work: echo setup
+
+// Compile everything
+[.build_workspace]
+help: Compile all workspace crates
+after: setup
+input:
+    **/*.rs
+    !firmware/**
+output: target/debug/*, !target/debug/*.d
+work:
+    cargo build --workspace
+    # shell comment, passed verbatim
+    cargo build --workspace --release
+"#;
+        let plan = parse_plan(input).unwrap();
+
+        assert_eq!(plan.operations.len(), 2);
+        let op = plan.find_operation("build_workspace").unwrap();
+        assert_eq!(op.help.as_deref(), Some("Compile all workspace crates"));
+        assert_eq!(op.depends, vec!["setup"]);
+        assert_eq!(op.inputs, vec!["**/*.rs", "!firmware/**"]);
+        assert_eq!(op.outputs, vec!["target/debug/*", "!target/debug/*.d"]);
+        assert_eq!(op.tasks.len(), 1);
+        assert_eq!(
+            op.tasks[0].command(),
+            Some("cargo build --workspace\n# shell comment, passed verbatim\ncargo build --workspace --release")
+        );
+        assert_eq!(plan.find_operation("setup").unwrap().help, None);
+    }
+
+    #[test]
+    fn test_parse_plan_exclude_only_patterns_is_error() {
+        let input = r#"version: 1
+
+[.build]
+input: !firmware/**
+work: make
+"#;
+        let err = parse_plan(input).unwrap_err().to_string();
+        assert!(err.contains("Operation 'build'") && err.contains("only exclude patterns"), "{err}");
+    }
+
+    /// `(line, message)` of every warning, for compact assertions.
+    fn warnings(plan: &Plan) -> Vec<(usize, &str)> {
+        plan.warnings.iter().map(|w| (w.line, w.message.as_str())).collect()
+    }
+
+    #[test]
+    fn test_lenient_clean_file_has_no_warnings() {
+        let plan = parse_plan("version: 1\n[.build]\nhelp: x\nwork: make\n").unwrap();
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_lenient_unknown_fields_in_operation() {
+        let input = r#"version: 1
+
+[.build]
+retry: 3
+work: make
+labels:
+    gpu
+
+    linux
+timeout: 5m
+after: prep
+
+[.prep]
+work: echo prep
+"#;
+        let plan = parse_plan(input).unwrap();
+        let build = plan.find_operation("build").unwrap();
+        assert_eq!(build.tasks.len(), 1);
+        assert_eq!(build.depends, vec!["prep"], "known fields after unknown ones still apply");
+        assert_eq!(warnings(&plan), vec![
+            (4, "unknown field 'retry' in operation 'build'"),
+            (6, "unknown field 'labels' in operation 'build'"),
+            (10, "unknown field 'timeout' in operation 'build'"),
+        ]);
+    }
+
+    #[test]
+    fn test_lenient_unknown_section_is_skipped_with_its_decorators() {
+        let input = r#"version: 1
+
+//! parcel: compress=true
+[secrets]
+TOKEN: vault://x
+  nested: y
+
+[.build]
+work: make
+"#;
+        let plan = parse_plan(input).unwrap();
+        assert_eq!(plan.operations.len(), 1);
+        assert!(plan.operations[0].plugin_metadata.is_empty(), "decorators of the skipped section are dropped");
+        assert_eq!(warnings(&plan), vec![(4, "unknown section '[secrets]'")]);
+    }
+
+    #[test]
+    fn test_lenient_unrecognised_top_level_and_goal_lines() {
+        let input = r#"version: 1
+%%% corrupted ~~~
+
+[goal]
+b: build
+not a goal line
+t: build
+
+[.build]
+work: make
+"#;
+        let plan = parse_plan(input).unwrap();
+        assert_eq!(plan.goals.len(), 2, "goal lines after the junk line are kept");
+        assert_eq!(warnings(&plan), vec![
+            (2, "unrecognised line '%%% corrupted ~~~' outside any section"),
+            (6, "unrecognised line 'not a goal line' in [goal] section"),
+        ]);
+    }
+
+    #[test]
+    fn test_lenient_comment_inside_operation_does_not_end_it() {
+        let plan = parse_plan("version: 1\n[.build]\n// note\n# note\nwork: make\nafter: prep\n[.prep]\nwork: x\n").unwrap();
+        assert_eq!(plan.find_operation("build").unwrap().depends, vec!["prep"]);
+        assert!(plan.warnings.is_empty());
+    }
+
+    #[test]
+    fn test_lenient_misspelled_field_is_only_a_warning() {
+        // Typos are not interpreted: `afetr` is an unknown field, so the
+        // dependency is dropped and reported (and fails in strict mode).
+        let plan = parse_plan("version: 1\n[.a]\nwork: x\n[.build]\nafetr: a\nwork: make\n").unwrap();
+        assert!(plan.find_operation("build").unwrap().depends.is_empty());
+        assert_eq!(warnings(&plan), vec![(5, "unknown field 'afetr' in operation 'build'")]);
+    }
+
+    #[test]
+    fn test_lenient_known_field_with_invalid_value_is_error() {
+        let err = parse_plan("version: 1\n[.build]\nafter: @@bad\nwork: make\n").unwrap_err().to_string();
+        assert!(err.contains("line 3") && err.contains("a valid 'after:' value"), "{err}");
+
+        let err = parse_plan("version: 1\n[.build]\nwork:\nafter: x\n").unwrap_err().to_string();
+        assert!(err.contains("a valid 'work:' value"), "empty work block: {err}");
+    }
+
+    #[test]
+    fn test_lenient_unsupported_version_is_still_error() {
+        assert!(parse_plan("version: 2\n[.build]\nwork: make\n").is_err());
     }
 
     #[test]

@@ -12,11 +12,10 @@ pub(crate) fn handle_execute_command(args: Args) -> Result<(), Box<dyn std::erro
     let content = std::fs::read_to_string(&args.farmfile)
         .map_err(|e| format!("❌ Failed to read config file {}: {}", args.farmfile.display(), e))?;
     
-    let parsed_plan = match farm::vendor::parse::parse_plan(&content) {
+    let parsed_plan = match crate::cmd::farmfile::parse_farmfile(&args.farmfile, &content) {
         Ok(plan) => plan,
         Err(e) => {
             // Display our rich error message with line numbers and context
-            eprintln!("❌ Failed to parse config file {}:", args.farmfile.display());
             eprintln!("{}", e);
             std::process::exit(1);
         }

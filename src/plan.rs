@@ -71,6 +71,7 @@ impl Plan {
         for parsed_operation in parsed.operations {
             let mut stage = Stage::new(parsed_operation.label.clone());
             stage.depends = parsed_operation.depends;
+            stage.help = parsed_operation.help;
             stage.inputs = parsed_operation.inputs;
             stage.outputs = parsed_operation.outputs;
             stage.declared_env = parsed_operation.declared_env;
@@ -82,8 +83,18 @@ impl Plan {
                         // Run shell commands through a shell to support variable expansion
                         // On Unix: /bin/sh -c "command"
                         // On Windows: cmd /C "command"
+                        //
+                        // Multi-line scripts (bare `work:` blocks) run with `-e` so a
+                        // failing line fails the operation instead of being silently
+                        // followed by the next line (Makefile-recipe semantics).
+                        // TODO: Windows `cmd /C` does not run multi-line scripts; needs a
+                        //       temp .cmd file or PowerShell for multi-line `work:` blocks.
                         #[cfg(unix)]
-                        let args = vec!["/bin/sh", "-c", &shell_task.command];
+                        let args = if shell_task.command.contains('\n') {
+                            vec!["/bin/sh", "-e", "-c", &shell_task.command]
+                        } else {
+                            vec!["/bin/sh", "-c", &shell_task.command]
+                        };
                         #[cfg(windows)]
                         let args = vec!["cmd", "/C", &shell_task.command];
                         
@@ -229,6 +240,16 @@ impl Plan {
         debug!("=== End Graph Debug Dump ===");
     }
 
+    /// `  # <help>` suffix for an operation with a `help:` line, empty otherwise.
+    fn help_suffix(&self, label: &str, use_colors: bool) -> String {
+        use colored::*;
+        match self.stages.iter().find(|s| s.label == label).and_then(|s| s.help.as_deref()) {
+            Some(help) if use_colors => format!("  {}", format!("# {help}").dimmed()),
+            Some(help) => format!("  # {help}"),
+            None => String::new(),
+        }
+    }
+
     /// Pretty print the plan graph in a tree-like format
     pub fn pretty_print_graph(&self) -> String {
         self.pretty_print_graph_colored(false)
@@ -299,8 +320,10 @@ impl Plan {
                 }
             })
             .unwrap_or_default();
-        
-        output.push_str(&format!("{}{}{}\n", prefix, node_name, goal_suffix));
+
+        let help_suffix = self.help_suffix(node_name, use_colors);
+
+        output.push_str(&format!("{}{}{}{}\n", prefix, node_name, goal_suffix, help_suffix));
         
         // Print children (nodes that depend on this one)
         let children: Vec<_> = self.graph
@@ -405,8 +428,10 @@ impl Plan {
             .map(|s| s.tasks.len())
             .unwrap_or(0);
         
+        let help_suffix = self.help_suffix(node_name, use_colors);
+
         // Print stage header with task count
-        output.push_str(&format!("{}{}{}  [{} tasks]\n", prefix, node_name, goal_suffix, task_count));
+        output.push_str(&format!("{}{}{}  [{} tasks]{}\n", prefix, node_name, goal_suffix, task_count, help_suffix));
         
         // Print tasks for this stage (with proper tree prefix)
         if let Some(stage) = stage {

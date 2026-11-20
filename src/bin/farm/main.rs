@@ -83,6 +83,10 @@ fn load_dotenv() {
 
 
 fn main() {
+    // Shell completion requests (`FARM_COMPLETE=<shell> farm ...`) are answered
+    // and exit here, before anything touches stdout.
+    crate::cmd::completion::complete_if_requested();
+
     if let Err(e) = run() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
@@ -95,6 +99,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     
     // 2. Parse CLI arguments
     let args = Args::parse();
+    crate::cmd::farmfile::set_strict(args.strict);
     
     // 3. Initialize logging
     // In interactive terminals, suppress logs unless RUST_LOG is explicitly set or --verbose
@@ -135,6 +140,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 no_cache,
                 non_interactive,
                 verbose: args.verbose,
+                strict: args.strict,
                 command: None,
             };
             
@@ -187,6 +193,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Commands::Cache { command }) => {
             handle_cache_command(command)
+        }
+        Some(Commands::Completions { shell }) => {
+            crate::cmd::completion::handle_completions_command(&shell)
         }
         Some(Commands::Version) => {
             if std::io::IsTerminal::is_terminal(&std::io::stderr()) {

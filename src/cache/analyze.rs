@@ -95,6 +95,7 @@ pub fn check_dependency_declarations(plan: &Plan, stages: &[String]) -> Dependen
         label: "root".to_string(),
         tasks: vec![],
         depends: vec![],
+        help: None,
         inputs: vec![],
         outputs: vec![],
         declared_env: std::collections::HashMap::new(),
@@ -157,6 +158,8 @@ pub fn check_dependency_declarations(plan: &Plan, stages: &[String]) -> Dependen
         let downstream_inputs: HashSet<&str> = downstream.inputs.iter().map(|s| s.as_str()).collect();
         let missing: Vec<String> = upstream.outputs
             .iter()
+            // `!` excludes are not outputs a downstream could consume
+            .filter(|output| !crate::vendor::parse::pattern::is_exclude(output))
             .filter(|output| !downstream_inputs.contains(output.as_str()))
             .cloned()
             .collect();
@@ -470,24 +473,12 @@ pub fn check_diff_coverage(
     workspace: &Path,
 ) -> Vec<PathBuf> {
     // Expand input patterns to get actual files
-    let declared_files: HashSet<PathBuf> = stage_inputs
-        .iter()
-        .flat_map(|pattern| {
-            let full_pattern = if pattern.starts_with('/') {
-                pattern.to_string()
-            } else {
-                workspace.join(pattern).to_string_lossy().to_string()
-            };
-            
-            glob(&full_pattern)
-                .ok()
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .filter(|p| p.is_file())
-                .map(|p| p.strip_prefix(workspace).unwrap_or(&p).to_path_buf())
-                .collect::<Vec<_>>()
-        })
+    // Honors `!` excludes; an invalid pattern set declares nothing
+    let declared_files: HashSet<PathBuf> = super::PatternSet::new(stage_inputs)
+        .map(|set| set.expand_files(workspace))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.strip_prefix(workspace).unwrap_or(&p).to_path_buf())
         .collect();
     
     // Find files that changed but aren't declared

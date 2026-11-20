@@ -9,11 +9,13 @@
 
 mod target_key;
 mod lookup;
+mod patterns;
 mod store;
 pub mod analyze;
 
 pub use target_key::{TargetKey, compute_target_key, hash_file_patterns};
 pub use lookup::{CacheLookup, CacheResult};
+pub use patterns::PatternSet;
 pub use store::{CacheStore, CacheEntry, VcsMetadata};
 pub use analyze::{
     check_dependency_declarations, 

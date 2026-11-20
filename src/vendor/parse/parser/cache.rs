@@ -5,6 +5,7 @@
 //! The `[cache]` section defines global cache configuration including
 //! platform-specific keys, size limits, and TTL settings.
 
+use super::lenient::{self, Skipped};
 use nom::{
     IResult,
     bytes::complete::{tag, take_while1, take_till},
@@ -30,7 +31,9 @@ use crate::vendor::parse::plan::CacheConfig;
 ///     RUSTC_VERSION: rustc --version
 ///     NODE_VERSION: node --version
 /// ```
-pub fn cache_section(input: &str) -> IResult<&str, CacheConfig> {
+///
+/// Unknown fields are skipped and returned as [`Skipped`].
+pub(crate) fn cache_section(input: &str) -> IResult<&str, (CacheConfig, Vec<Skipped<'_>>)> {
     use nom::error::Error;
     use super::general::comment_line;
 
@@ -45,6 +48,7 @@ pub fn cache_section(input: &str) -> IResult<&str, CacheConfig> {
     let (mut remaining, _) = cache_section_header.parse(input)?;
 
     let mut config = CacheConfig::default();
+    let mut skipped = Vec::new();
 
     loop {
         // Skip empty lines and comments
@@ -57,11 +61,15 @@ pub fn cache_section(input: &str) -> IResult<&str, CacheConfig> {
                 remaining = new_input;
                 continue;
             }
+            if let Some(new_input) = lenient::skip_blank_line(remaining) {
+                remaining = new_input;
+                continue;
+            }
             break;
         }
 
-        // Check for end or next section
-        if remaining.is_empty() || remaining.starts_with('[') {
+        // Check for end, next section or a decorator
+        if lenient::at_section_end(remaining) {
             break;
         }
 
@@ -95,15 +103,10 @@ pub fn cache_section(input: &str) -> IResult<&str, CacheConfig> {
 
         // Unknown line in cache section - skip it
         // This allows forward compatibility with new fields
-        if let Ok((new_input, _)) = skip_unknown_line(remaining) {
-            remaining = new_input;
-            continue;
-        }
-
-        break;
+        remaining = lenient::skip_unrecognised(remaining, "in [cache] section", &mut skipped);
     }
 
-    Ok((remaining, config))
+    Ok((remaining, (config, skipped)))
 }
 
 /// Parse `max_size: 10GB` line
@@ -282,16 +285,6 @@ fn env_command_section(input: &str) -> IResult<&str, HashMap<String, String>> {
     Ok((remaining, commands))
 }
 
-/// Skip an unknown line (for forward compatibility)
-fn skip_unknown_line(input: &str) -> IResult<&str, ()> {
-    use nom::error::Error;
-    
-    let (input, _) = take_till(|c| c == '\n' || c == '\r')(input)?;
-    let (input, _) = line_ending::<&str, Error<&str>>(input)?;
-    
-    Ok((input, ()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,7 +301,7 @@ env_command:
     RUSTC_VERSION: rustc --version
     NODE_VERSION: node --version
 "#;
-        let (remaining, config) = cache_section(input).unwrap();
+        let (remaining, (config, _)) = cache_section(input).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(config.max_size, Some("10GB".to_string()));
         assert_eq!(config.ttl, Some("30d".to_string()));
@@ -320,7 +313,7 @@ env_command:
     #[test]
     fn test_cache_section_minimal() {
         let input = "[cache]\nmax_size: 5GB\n";
-        let (remaining, config) = cache_section(input).unwrap();
+        let (remaining, (config, _)) = cache_section(input).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(config.max_size, Some("5GB".to_string()));
         assert!(config.env_key.is_empty());
@@ -334,7 +327,7 @@ env_key:
     CC
     CFLAGS
 "#;
-        let (remaining, config) = cache_section(input).unwrap();
+        let (remaining, (config, _)) = cache_section(input).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(config.env_key, vec!["CC", "CFLAGS"]);
     }
@@ -348,7 +341,7 @@ env_key:
     FARM_PLATFORM      # Platform identifier
     CC                 # Compiler
 "#;
-        let (remaining, config) = cache_section(input).unwrap();
+        let (remaining, (config, _)) = cache_section(input).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(config.max_size, Some("10GB".to_string()));
         assert_eq!(config.env_key, vec!["FARM_PLATFORM", "CC"]);
@@ -360,7 +353,7 @@ env_key:
 max_size: 10GB
 [operation.build]
 "#;
-        let (remaining, config) = cache_section(input).unwrap();
+        let (remaining, (config, _)) = cache_section(input).unwrap();
         assert_eq!(remaining, "[operation.build]\n");
         assert_eq!(config.max_size, Some("10GB".to_string()));
     }
@@ -371,7 +364,7 @@ max_size: 10GB
 env_command:
     GCC_VERSION: gcc --version 2>&1 | head -1
 "#;
-        let (remaining, config) = cache_section(input).unwrap();
+        let (remaining, (config, _)) = cache_section(input).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(
             config.env_command.get("GCC_VERSION"),

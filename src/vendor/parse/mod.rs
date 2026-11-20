@@ -20,9 +20,12 @@
 //!     "[operation.build]\n",
 //!     "work: echo 'Building project...'\n",
 //!     "\n",
-//!     "[operation.test]\n",
-//!     "work: echo 'Running tests...'\n",
-//!     "after: build\n"
+//!     "[.test]\n",
+//!     "help: Run the test suite\n",
+//!     "after: build\n",
+//!     "work:\n",
+//!     "    echo 'Running tests...'\n",
+//!     "    echo 'done'\n",
 //! );
 //!
 //! match parse_plan(content) {
@@ -31,6 +34,7 @@
 //!         assert_eq!(plan.variants, vec!["debug", "release"]);
 //!         assert_eq!(plan.operations[0].label, "build");
 //!         assert_eq!(plan.operations[1].label, "test");
+//!         assert_eq!(plan.operations[1].help.as_deref(), Some("Run the test suite"));
 //!     }
 //!     Err(e) => panic!("Parse failed: {}", e)
 //! }
@@ -42,7 +46,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub mod plan;
 pub mod task;
 pub mod parser;
+pub mod pattern;
 
 pub use plan::{Plan, Operation, EnvValue, CacheConfig};
 pub use task::Task;
-pub use parser::{parse_plan, ParseError, ParseErrorKind};
+pub use parser::{parse_plan, ParseError, ParseErrorKind, ParseWarning};

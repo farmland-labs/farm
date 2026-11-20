@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use clap::{Parser, Subcommand};
+use clap_complete::ArgValueCandidates;
 use farm::vendor::log::{info, warn};
 
 use crate::version_string;
@@ -38,7 +39,8 @@ pub(crate) struct Args {
     /// The target operation to reach
     #[arg(
         long,
-        help = "The target operation to reach"
+        help = "The target operation to reach",
+        add = ArgValueCandidates::new(crate::cmd::completion::target_candidates)
     )]
     pub(crate) target: Option<String>,
 
@@ -110,6 +112,19 @@ pub(crate) struct Args {
     )]
     pub(crate) verbose: bool,
 
+    /// Fail on unrecognised Farmfile content instead of warning and ignoring it.
+    /// Unknown sections/fields are skipped by default so newer and older
+    /// Farmfiles keep working; CI and tests use this to insist on a clean file.
+    #[arg(
+        long,
+        global = true,
+        env = "FARM_STRICT",
+        // `FARM_STRICT=1|true|yes|on` enables, `0|false|no|off` or empty disables
+        value_parser = clap::builder::FalseyValueParser::new(),
+        help = "Fail on unrecognised Farmfile content instead of warning and ignoring it (env: FARM_STRICT)"
+    )]
+    pub(crate) strict: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 }
@@ -119,6 +134,7 @@ pub(crate) enum Commands {
     /// Run a target operation (shortcut for --target)
     Run {
         /// The target operation to run
+        #[arg(add = ArgValueCandidates::new(crate::cmd::completion::target_candidates))]
         target: String,
 
         /// Farmfile describing the operations and dependencies
@@ -303,6 +319,7 @@ EXAMPLES:
     farm log test --follow       Follow a run as it executes")]
     Log {
         /// Goal to show logs for. Omit for the most recent run of any goal.
+        #[arg(add = ArgValueCandidates::new(crate::cmd::completion::target_candidates))]
         goal: Option<String>,
 
         /// Restrict to one variant. Omit to match any.
@@ -353,6 +370,19 @@ EXAMPLES:
     
     /// Show version information and banner
     Version,
+
+    /// Print the shell completion script (goals/operations complete from the Farmfile)
+    #[command(after_help = "\
+Setup (completions stay current: the script calls back into farm on <TAB>):
+    bash:        echo 'source <(farm completions bash)' >> ~/.bashrc
+    zsh:         echo 'source <(farm completions zsh)' >> ~/.zshrc
+    fish:        echo 'farm completions fish | source' >> ~/.config/fish/config.fish
+    powershell:  add 'farm completions powershell | Out-String | Invoke-Expression' to $PROFILE")]
+    Completions {
+        /// Shell to generate the script for
+        #[arg(value_parser = crate::cmd::completion::shell_names())]
+        shell: String,
+    },
 }
 
 

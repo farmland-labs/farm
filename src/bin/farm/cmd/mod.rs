@@ -5,8 +5,10 @@
 pub(crate) mod analyze;
 pub(crate) mod branch;
 pub(crate) mod cache;
+pub(crate) mod completion;
 pub(crate) mod ctx;
 pub(crate) mod execute;
+pub(crate) mod farmfile;
 pub(crate) mod log;
 pub(crate) mod plan;
 pub(crate) mod replay;

@@ -127,14 +127,13 @@ pub fn hash_file_patterns(workspace: &Path, patterns: &[String], stage_name: &st
     }
     
     let mut all_files: Vec<PathBuf> = Vec::new();
-    
-    for pattern in patterns {
+
+    // `!`-prefixed patterns exclude files matched by the include patterns
+    let pattern_set = super::PatternSet::new(patterns)?;
+
+    for pattern in pattern_set.includes() {
         // Make pattern relative to workspace
-        let full_pattern = if pattern.starts_with('/') {
-            pattern.to_string()
-        } else {
-            workspace.join(pattern).to_string_lossy().to_string()
-        };
+        let full_pattern = super::PatternSet::full_pattern(workspace, pattern);
         
         trace!("Expanding glob pattern: {} -> {}", pattern, full_pattern);
         
@@ -143,6 +142,9 @@ pub fn hash_file_patterns(workspace: &Path, patterns: &[String], stage_name: &st
                 let mut pattern_count = 0;
                 for entry in paths {
                     match entry {
+                        Ok(path) if path.is_file() && pattern_set.is_excluded(workspace, &path) => {
+                            trace!("  excluded file: {}", path.display());
+                        }
                         Ok(path) if path.is_file() => {
                             trace!("  matched file: {}", path.display());
                             all_files.push(path);

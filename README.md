@@ -135,8 +135,8 @@ farm log -l
 ## Farmfile Format
 
 A Farmfile starts with `version: 1` and is composed of sections. Operations
-(`[operation.<name>]`) declare the work and its dependencies; the other
-sections are optional.
+(`[.<name>]`, long form `[operation.<name>]`) declare the work and its
+dependencies; the other sections are optional.
 
 ```toml
 version: 1
@@ -159,17 +159,26 @@ test: run_tests
 [operation.prepare]
 work: mkdir -p build
 
-[operation.build_app]
+[.build_app]
+help: Build the app in debug mode
 variant: debug
 after: prepare
-input: src/**/*.rs, Cargo.toml, Cargo.lock
+input:
+    src/**/*.rs
+    Cargo.toml
+    Cargo.lock
+    !src/generated/**
 output: target/debug/app
-env: RUSTFLAGS              # cache-key env (see Target Cache, below)
+env: RUSTFLAGS
 work: make build VARIANT=debug
 
-[operation.run_tests]
+[.run_tests]
+help: Run the test suite
 after: build_app
-work: make test
+work:
+    cd tests
+    ./setup.sh
+    make test
 ```
 
 Section reference:
@@ -180,7 +189,48 @@ Section reference:
 | `[env]` | Env vars set for all operations (see [`[env]` Section](#env-section)) |
 | `[goal]` | Friendly goal names → operation labels |
 | `[cache]` | Global cache config (see [`[cache]` Configuration Section](#cache-configuration-section)) |
-| `[operation.<name>]` | An operation: `work:`, `after:`, `input:`, `output:`, `env:`, `variant:` |
+| `[.<name>]` / `[operation.<name>]` | An operation: `work:`, `after:`, `help:`, `input:`, `output:`, `env:`, `variant:` (see [Operations](#operations)) |
+
+### <a id="operations"></a>Operations
+
+`[.build]` and `[operation.build]` are the same operation; the short form just
+drops the keyword. Fields:
+
+| Field | Meaning |
+|-------|---------|
+| `work: <cmd>` | One shell command. Repeatable; each `work:` runs in its own shell, in order. Indented lines below it are folded into the command (joined with a space). |
+| `work:` + indented lines | Nothing after `work:` (same shape as multi-line `input:`/`output:`): every following indented (or blank) line, de-indented, runs as **one** script with `sh -e` — `cd` carries over, and the first failing line fails the operation. The block ends at the first unindented line. Use shell `#` comments inside it. |
+| `after: a, b` | Operations that must run first (or one per indented line). |
+| `help: <text>` | One-line description, shown in `farm plan` (`build → goal  # text`) and in shell completion. |
+| `input:` / `output:` | Glob patterns (comma-separated or one per indented line). A `!` prefix excludes: a file is selected if it matches an include and no exclude, e.g. `!firmware/**`. `!dir/` is short for `!dir/**`. A list of only excludes is an error. Note `*` does not cross `/`; use `dir/**/*` for all files below `dir`. |
+| `env: KEY, KEY=value` | Env that is part of the cache key (see [Target Cache](#target-cache-system)). |
+
+Farmfile comments (`//`, `#`) are whole-line only.
+
+### <a id="farmfile-compatibility"></a>Compatibility: unknown content is ignored
+
+So that a newer Farmfile still runs on an older `farm` (and the other way
+round), content the parser does not know is **skipped with a warning** instead
+of failing the parse:
+
+- unknown sections (`[secrets]`) up to the next `[...]` header
+- unknown fields in an operation or `[cache]` (`timeout: 5m`), including their indented lines
+- unrecognised lines anywhere else
+
+```text
+warning: Farmfile has 1 unrecognised part(s), ignored (use --strict to fail):
+  Farmfile:9: unknown field 'timeout' in operation 'build'
+```
+
+Typos are not guessed at: a misspelled `afetr:` is an unknown field, so the
+dependency is dropped and reported. Use `--strict` (or `FARM_STRICT=1`) in CI
+and tests to turn every warning into an error. `farm plan --format structure`
+lists them under `warnings`.
+
+Still hard errors: a missing or unsupported `version:`, a **known** field with
+an invalid value (`after: @@bad`, an empty `work:` block), and semantic errors
+(dependency cycles, unknown `after:` targets, duplicate operations, goals
+pointing to unknown operations).
 
 ### <a id="env-section"></a>`[env]` Section
 
@@ -292,6 +342,7 @@ farm reads these from the environment:
 | `FARM_BUILD_ID` | Build ID for run isolation (default: goal name) |
 | `FARM_CTX` | Active context name |
 | `FARM_VARIANT` / `FARM_TARGET` | Default variant / target |
+| `FARM_STRICT` | `1`/`true`/`yes`: same as `--strict` (fail on unrecognised Farmfile content) |
 | `NO_COLOR` | Disable colored output (e.g. the `farm version` banner) |
 | `RUST_LOG` | Logging level (e.g. `farm=debug`, `farm::cache=debug`) |
 
@@ -318,6 +369,7 @@ for input gets EOF and fails fast rather than hanging.
 | `-1, --only` | Run only the target, skip dependencies |
 | `-n, --no-cache` | Bypass cache, always re-execute |
 | `--verbose` | Enable debug-level logging |
+| `--strict` | Fail on unrecognised Farmfile content instead of warning (see [Compatibility](#farmfile-compatibility)) |
 | `-V, --version` | Print version (rustc-style) |
 | `--only, -1` | Run only the target, skip dependencies |
 | `--no-cache, -n` | Bypass cache, always re-execute |
@@ -339,6 +391,23 @@ for input gets EOF and fails fast rather than hanging.
 | `farm cache remove <id>` | Remove entries by operation name or key prefix |
 | `farm cache check <ops…>` | Check input/output declarations between dependent ops |
 | `farm version` | Show the version banner |
+| `farm completions <shell>` | Print the shell completion script (bash, zsh, fish, elvish, powershell) |
+
+### Shell Completion
+
+Goals and operations complete from the Farmfile in the current directory, with
+their `help:` text as description (zsh, fish, powershell). The script calls back
+into `farm` on every <kbd>Tab</kbd>, so it stays current with the Farmfile and
+the installed version:
+
+```bash
+echo 'source <(farm completions bash)' >> ~/.bashrc
+echo 'source <(farm completions zsh)'  >> ~/.zshrc
+echo 'farm completions fish | source'  >> ~/.config/fish/config.fish
+```
+
+PowerShell: add `farm completions powershell | Out-String | Invoke-Expression`
+to `$PROFILE`.
 
 ## Target Cache System
 

@@ -441,10 +441,9 @@ fn test_plan_structure_omits_task_details() {
 version: 1
 
 [operation.build]
-work: ```
-SECRET_KEY=supersecret
-echo $SECRET_KEY
-```
+work:
+    SECRET_KEY=supersecret
+    echo $SECRET_KEY
 "#,
     );
 
@@ -465,4 +464,83 @@ echo $SECRET_KEY
     let json: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
     let ops = json["operations"].as_array().unwrap();
     assert_eq!(ops[0]["task_count"], 1, "should show task count");
+}
+
+// =============================================================================
+// Lenient parsing / strict mode
+// =============================================================================
+
+/// A Farmfile that is valid apart from content this farm doesn't know.
+const FARMFILE_WITH_UNKNOWN_PARTS: &str = r#"version: 1
+
+[secrets]
+TOKEN: vault://x
+
+[.build]
+help: Build it
+work: echo build
+timeout: 5m
+"#;
+
+/// Run `farm plan` with `FARM_STRICT` explicitly set (`Some`) or removed (`None`),
+/// so the outer test environment can't change the outcome.
+fn plan_with_strict_env(ws: &TestWorkspace, strict_env: Option<&str>, args: &[&str]) -> FarmResult {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_farm"));
+    cmd.current_dir(ws.dir.path()).arg("plan").args(args);
+    match strict_env {
+        Some(value) => cmd.env("FARM_STRICT", value),
+        None => cmd.env_remove("FARM_STRICT"),
+    };
+    let output = cmd.output().expect("Failed to execute farm");
+    FarmResult {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+#[test]
+fn test_plan_lenient_warns_and_ignores_unknown_parts() {
+    let ws = TestWorkspace::new();
+    ws.write_farmfile(FARMFILE_WITH_UNKNOWN_PARTS);
+
+    let result = plan_with_strict_env(&ws, None, &["--format", "structure"]);
+    assert!(result.success, "unknown parts must not fail the parse: {}", result.stderr);
+    assert!(result.stderr.contains("Farmfile:3: unknown section '[secrets]'"), "{}", result.stderr);
+    assert!(result.stderr.contains("Farmfile:9: unknown field 'timeout' in operation 'build'"), "{}", result.stderr);
+
+    // stdout stays machine-readable and carries the warnings too
+    let json: serde_json::Value = serde_json::from_str(&result.stdout).expect("structure output is JSON");
+    assert_eq!(json["operations"][0]["label"], "build");
+    assert_eq!(json["warnings"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn test_plan_strict_flag_fails_on_unknown_parts() {
+    let ws = TestWorkspace::new();
+    ws.write_farmfile(FARMFILE_WITH_UNKNOWN_PARTS);
+
+    let result = plan_with_strict_env(&ws, None, &["--strict"]);
+    assert!(!result.success);
+    assert!(result.stderr.contains("strict mode"), "{}", result.stderr);
+    assert!(result.stderr.contains("unknown section '[secrets]'"), "{}", result.stderr);
+}
+
+#[test]
+fn test_plan_strict_env_fails_on_unknown_parts() {
+    let ws = TestWorkspace::new();
+    ws.write_farmfile(FARMFILE_WITH_UNKNOWN_PARTS);
+
+    assert!(!plan_with_strict_env(&ws, Some("1"), &[]).success, "FARM_STRICT=1 enables strict mode");
+    assert!(plan_with_strict_env(&ws, Some("0"), &[]).success, "FARM_STRICT=0 keeps lenient mode");
+}
+
+#[test]
+fn test_plan_strict_accepts_clean_farmfile() {
+    let ws = TestWorkspace::new();
+    ws.write_farmfile("version: 1\n\n[.build]\nwork: echo build\n");
+
+    let result = plan_with_strict_env(&ws, Some("1"), &[]);
+    assert!(result.success, "{}", result.stderr);
+    assert!(!result.stderr.contains("warning"), "{}", result.stderr);
 }
