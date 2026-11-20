@@ -46,12 +46,17 @@ pub struct Operation {
     
     /// Dependencies on other operations (by label)
     pub depends: Vec<String>,
+
+    /// Short description from `help:`, shown in `farm plan` and shell completions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
     
-    /// Input file patterns for cache key computation (e.g., "src/**", "Makefile")
+    /// Input file patterns for cache key computation (e.g., "src/**", "Makefile").
+    /// `!`-prefixed patterns are excludes, see [`crate::vendor::parse::pattern`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     
-    /// Output file patterns (e.g., ".build/**")
+    /// Output file patterns (e.g., ".build/**"); `!`-prefixed patterns are excludes
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
     
@@ -72,6 +77,7 @@ impl Operation {
             label: label.into(),
             tasks: Vec::new(),
             depends: Vec::new(),
+            help: None,
             inputs: Vec::new(),
             outputs: Vec::new(),
             declared_env: HashMap::new(),
@@ -140,6 +146,11 @@ pub struct Plan {
     /// Global cache configuration from `[cache]` section
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<CacheConfig>,
+
+    /// Content the parser did not understand and skipped (unknown sections,
+    /// unknown fields, unrecognised lines). Empty for a clean Farmfile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<crate::vendor::parse::parser::ParseWarning>,
     
     /// Internal dependency graph (not serialized)
     #[serde(skip)]
@@ -159,6 +170,7 @@ impl Plan {
             operations: Vec::new(),
             goals: HashMap::new(),
             cache: None,
+            warnings: Vec::new(),
             graph: DiGraph::new(),
             node_map: HashMap::new(),
         }
@@ -178,6 +190,12 @@ impl Plan {
         // Validate that the operation has at least one task
         if operation.tasks.is_empty() {
             return Err(format!("Operation '{}' must have at least one 'work:' field", operation.label));
+        }
+
+        // An include/exclude list must select something
+        for (field, patterns) in [("input", &operation.inputs), ("output", &operation.outputs)] {
+            crate::vendor::parse::pattern::validate_patterns(field, patterns)
+                .map_err(|e| format!("Operation '{}': {}", operation.label, e))?;
         }
         
         // Check if operation with same label already exists

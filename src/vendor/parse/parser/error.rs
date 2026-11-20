@@ -170,6 +170,11 @@ impl fmt::Display for ParseErrorKind {
 
 impl std::error::Error for ParseError {}
 
+/// 1-based line number of `position` (a suffix of `input`).
+pub(crate) fn line_of(input: &str, position: &str) -> usize {
+    calculate_line_column(input, position).0
+}
+
 /// Calculate line and column numbers for a position in the input
 fn calculate_line_column(input: &str, position: &str) -> (usize, usize) {
     let offset = position.as_ptr() as isize - input.as_ptr() as isize;

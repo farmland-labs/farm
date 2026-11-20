@@ -17,6 +17,8 @@ pub struct Stage {
     pub outputs: Vec<String>,
     pub declared_env: HashMap<String, EnvValue>,
     pub depends: Vec<String>,        // Dependencies
+    /// Short description from the Farmfile `help:` line (display only, not part of the work hash)
+    pub help: Option<String>,
     pub tasks: Vec<Arc<Box<dyn Task>>>,
 }
 
@@ -48,6 +50,7 @@ impl Stage {
             outputs: Vec::new(),
             declared_env: HashMap::new(),
             depends: Vec::new(),
+            help: None,
             tasks: Vec::new(),
         }
     }

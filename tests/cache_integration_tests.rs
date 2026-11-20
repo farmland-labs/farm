@@ -116,9 +116,8 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-cat src/main.txt > output.txt
-```
+work:
+    cat src/main.txt > output.txt
 output: output.txt
 "#);
     
@@ -138,10 +137,9 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-cat src/main.txt > output.txt
-echo "executed" >> execution.log
-```
+work:
+    cat src/main.txt > output.txt
+    echo "executed" >> execution.log
 output: output.txt
 "#);
     
@@ -176,10 +174,9 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-cat src/main.txt > output.txt
-echo "run" >> runs.log
-```
+work:
+    cat src/main.txt > output.txt
+    echo "run" >> runs.log
 output: output.txt
 "#);
     
@@ -211,9 +208,8 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-echo "run" >> runs.log
-```
+work:
+    echo "run" >> runs.log
 "#);
     
     // First run (cached)
@@ -371,10 +367,9 @@ version: 1
 [operation.build]
 input: src/**/*.txt
 env: BUILD_TYPE
-work: ```
-echo "$BUILD_TYPE" > output.txt
-echo "run" >> runs.log
-```
+work:
+    echo "$BUILD_TYPE" > output.txt
+    echo "run" >> runs.log
 output: output.txt
 "#);
     
@@ -469,9 +464,8 @@ fn test_no_inputs_means_uncacheable() {
 version: 1
 
 [operation.always_run]
-work: ```
-echo "run" >> runs.log
-```
+work:
+    echo "run" >> runs.log
 "#);
     
     // Run multiple times - should always execute (no inputs = uncacheable)
@@ -503,10 +497,9 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-echo "ok" > output.txt
-echo "run" >> runs.log
-```
+work:
+    echo "ok" > output.txt
+    echo "run" >> runs.log
 output: output.txt
 "#);
 
@@ -597,10 +590,9 @@ release
 [operation.build]
 variant: debug, release
 input: src/**/*.txt
-work: ```
-echo "run-$FARM_VARIANT" >> runs.log
-echo "$FARM_VARIANT" > output.txt
-```
+work:
+    echo "run-$FARM_VARIANT" >> runs.log
+    echo "$FARM_VARIANT" > output.txt
 output: output.txt
 "#);
     
@@ -639,10 +631,9 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-echo "command v1" > output.txt
-echo "run" >> runs.log
-```
+work:
+    echo "command v1" > output.txt
+    echo "run" >> runs.log
 output: output.txt
 "#);
     
@@ -658,10 +649,9 @@ version: 1
 
 [operation.build]
 input: src/**/*.txt
-work: ```
-echo "command v2" > output.txt
-echo "run" >> runs.log
-```
+work:
+    echo "command v2" > output.txt
+    echo "run" >> runs.log
 output: output.txt
 "#);
     

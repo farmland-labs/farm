@@ -24,8 +24,7 @@ pub(crate) fn handle_analyze_run(
     
     // Parse Farmfile to get declared input/output
     let content = std::fs::read_to_string(&args.farmfile)?;
-    let plan = farm::vendor::parse::parse_plan(&content)
-        .map_err(|e| format!("Failed to parse Farmfile: {}", e))?;
+    let plan = crate::cmd::farmfile::parse_farmfile(&args.farmfile, &content)?;
     
     // Find the target operation
     let operation = plan.operations
@@ -54,6 +53,15 @@ pub(crate) fn handle_analyze_run(
         
         patterns
     };
+
+    // `!`-prefixed (output) patterns are excludes: fold them into the exclude list
+    let split = farm::vendor::parse::pattern::split_patterns(&patterns);
+    let track_excludes: Vec<String> = track_excludes
+        .iter()
+        .cloned()
+        .chain(split.excludes.iter().map(|p| p.to_string()))
+        .collect();
+    let patterns: Vec<String> = split.includes.iter().map(|p| p.to_string()).collect();
     
     println!("📁 Tracking {} pattern(s):", patterns.len());
     for pattern in &patterns {

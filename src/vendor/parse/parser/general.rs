@@ -52,7 +52,7 @@ fn work_single_line(input: &str) -> IResult<&str, String> {
     // Field names / directives that should NEVER be swallowed as a work
     // continuation, even when accidentally indented.
     const FIELD_PREFIXES: &[&str] = &[
-        "work:", "after:", "input:", "output:", "env:", "variant:",
+        "work:", "after:", "help:", "input:", "output:", "env:", "variant:",
         "//!", "//", "#",
     ];
 
@@ -90,49 +90,93 @@ fn work_single_line(input: &str) -> IResult<&str, String> {
     }
 }
 
-/// `work_single_line` parses a multiline commandline blok as it would be called on the shell.
-/// 
+/// `work_verbatim_block` parses a `work:` with nothing after it on the line, the
+/// same multi-line shape as `input:` / `output:`. Every following line that is
+/// indented (or blank) belongs to the script, which is kept verbatim after
+/// removing the leading whitespace common to all non-blank lines. The block ends
+/// at the first non-blank line without indentation; trailing blank lines are
+/// dropped. The whole block is ONE task, so it runs in a single shell
+/// (`cd` carries over between lines).
+///
+/// Lines inside the block are not interpreted by the Farmfile parser: use shell
+/// `#` comments there, a `//` line would be passed to the shell.
+///
 /// # Examples
 /// ```text
-///     shell: ```
-///     set -e
-///     echo "hello"
-///     ```  =>  "set -e\necho \"hello\""
+///     work:
+///         cd farmland-website
+///         npm ci
+///         npm run build       =>  "cd farmland-website\nnpm ci\nnpm run build"
 /// ```
-fn work_block(input: &str) -> IResult<&str, String> {
-    use nom::bytes::complete::take_until;
-    use nom::character::complete::space0;
-    
-    // Parse "work:" followed by optional spaces and triple backticks
-    let (input, (_, _, _, _)) = (
-        tag("work:"),
-        space1,
-        space0,
-        tag("```")
-    ).parse(input)?;
-    
-    // Consume the rest of the line after the opening backticks
-    let (input, _) = line_ending.parse(input)?;
-    
-    // Parse content until we find the closing triple backticks
-    let (input, content) = take_until("```").parse(input)?;
-    
-    // Consume the closing triple backticks and optional trailing content on that line
-    let (input, _) = tag("```").parse(input)?;
-    
-    // Consume the rest of the line (in case there's whitespace after closing backticks)
-    let (input, _) = line_ending.parse(input)?;
-    
-    // Trim trailing newline from content if present
-    let content = content.strip_suffix('\n').unwrap_or(content);
-    
-    Ok((input, content.into()))
+fn work_verbatim_block(input: &str) -> IResult<&str, String> {
+    use nom::error::{Error, ErrorKind};
+
+    let (input, _) = (tag("work:"), space0, line_ending).parse(input)?;
+
+    let mut lines: Vec<&str> = Vec::new();
+    let mut remaining = input;
+
+    while !remaining.is_empty() {
+        let line_end = remaining.find('\n').map(|i| i + 1).unwrap_or(remaining.len());
+        let line = remaining[..line_end].trim_end_matches(['\n', '\r']);
+
+        let is_blank = line.trim().is_empty();
+        if !is_blank && !line.starts_with([' ', '\t']) {
+            break;
+        }
+
+        lines.push(line);
+        remaining = &remaining[line_end..];
+    }
+
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+
+    // An empty block is a hard error, so `alt` does not fall back to
+    // `work_single_line` and silently run `|` as a command.
+    if lines.is_empty() {
+        return Err(nom::Err::Failure(Error::new(input, ErrorKind::Verify)));
+    }
+
+    // Common leading whitespace (char-wise, so mixed tabs/spaces never panic:
+    // lines that disagree simply keep their extra indentation).
+    let common = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| &l[..l.len() - l.trim_start().len()])
+        .reduce(|a, b| {
+            let n = a.chars().zip(b.chars()).take_while(|(x, y)| x == y).map(|(x, _)| x.len_utf8()).sum();
+            &a[..n]
+        })
+        .unwrap_or("");
+
+    let script = lines
+        .iter()
+        .map(|l| l.strip_prefix(common).unwrap_or(l.trim_start()))
+        .map(|l| if l.trim().is_empty() { "" } else { l })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok((remaining, script))
 }
 
 /// `work_line` parses either single-line or multi-line work commands.
-/// First tries to parse a block format, then falls back to single-line format.
+/// First tries the block format (bare `work:`), then falls back to single-line format.
 pub fn work_line(input: &str) -> IResult<&str, String> {
-    alt((work_block, work_single_line)).parse(input)
+    alt((work_verbatim_block, work_single_line)).parse(input)
+}
+
+/// `help_line` parses a short, single-line description of an operation. It is
+/// shown next to the operation in `farm plan` and in shell completions.
+///
+/// # Examples
+/// ```text
+///     help: Build all workspace crates   =>  "Build all workspace crates"
+/// ```
+pub fn help_line(input: &str) -> IResult<&str, String> {
+    let (input, (_, _, text)) = (tag("help:"), space1, line_until_end).parse(input)?;
+    Ok((input, text.trim().to_string()))
 }
 
 /// `after_line` parses the dependency-operations list. Two equivalent forms
@@ -197,6 +241,8 @@ pub fn after_line(input: &str) -> IResult<&str, Vec<String>> {
 
 /// `input_line` parses input file patterns for cache key computation.
 /// Supports both single-line (comma-separated) and multi-line (indented) formats.
+/// A pattern prefixed with `!` excludes matching files from the included set
+/// (see [`crate::vendor::parse::pattern`]).
 /// 
 /// # Examples
 /// ```text
@@ -206,6 +252,7 @@ pub fn after_line(input: &str) -> IResult<&str, Vec<String>> {
 ///       src/**
 ///       Makefile
 ///       Cargo.toml
+///       !src/generated/**
 /// ```
 pub fn input_line(input: &str) -> IResult<&str, Vec<String>> {
     parse_list_field("input:", input)
@@ -213,6 +260,7 @@ pub fn input_line(input: &str) -> IResult<&str, Vec<String>> {
 
 /// `output_line` parses output file patterns.
 /// Supports both single-line (comma-separated) and multi-line (indented) formats.
+/// A pattern prefixed with `!` excludes matching files (see [`crate::vendor::parse::pattern`]).
 /// 
 /// # Examples
 /// ```text
@@ -354,6 +402,8 @@ pub fn env_line(input: &str) -> IResult<&str, std::collections::HashMap<String, 
 /// Helper to parse a list field (inputs/outputs) that supports single-line or multi-line format.
 fn parse_list_field<'a>(field_tag: &str, input: &'a str) -> IResult<&'a str, Vec<String>> {
     use nom::bytes::complete::take_while1;
+    use nom::character::complete::char;
+    use nom::combinator::{opt, recognize};
     
     let (input, _) = tag(field_tag)(input)?;
     
@@ -388,8 +438,9 @@ fn parse_list_field<'a>(field_tag: &str, input: &'a str) -> IResult<&'a str, Vec
                 continue;
             }
             
-            // Parse pattern
-            let (new_input, pattern): (&str, &str) = take_while1(pattern_char)(new_input)?;
+            // Parse pattern (optionally `!`-prefixed = exclude)
+            let (new_input, pattern): (&str, &str) =
+                recognize((opt(char('!')), take_while1(pattern_char))).parse(new_input)?;
             let (new_input, _) = line_ending(new_input)?;
             
             result.push(pattern.to_string());
@@ -402,7 +453,7 @@ fn parse_list_field<'a>(field_tag: &str, input: &'a str) -> IResult<&'a str, Vec
         let (input, _) = space1(input)?;
         let mut patterns = separated_list0(
             tag(","),
-            preceded(space0, take_while1(pattern_char))
+            preceded(space0, recognize((opt(char('!')), take_while1(pattern_char))))
         );
         let (input, names): (&str, Vec<&str>) = patterns.parse(input)?;
         let (input, _) = line_ending(input)?;
@@ -550,64 +601,111 @@ mod tests {
 
     #[test] 
     fn test_work_block_simple() {
-        let input = "work: ```\necho hello\n```\n";
+        let input = "work:\n    echo hello\n";
         let expected = "echo hello".into();
         assert_eq!(work_line(input), Ok(("", expected)));
     }
 
     #[test]
     fn test_work_block_multiline() {
-        let input = "work: ```\nset -e\necho \"Building...\"\ncargo build --release\n```\n";
+        let input = "work:\n    set -e\n    echo \"Building...\"\n    cargo build --release\n";
         let expected = "set -e\necho \"Building...\"\ncargo build --release".into();
         assert_eq!(work_line(input), Ok(("", expected)));
     }
 
     #[test]
-    fn test_work_block_preserves_whitespace() {
-        let input = "work: ```\n  indented line\n    more indented\n  back to two spaces\n```\n";
-        let expected = "  indented line\n    more indented\n  back to two spaces".into();
+    fn test_work_block_preserves_relative_indentation() {
+        let input = "work:\n    indented line\n      more indented\n    back to the block indent\n";
+        let expected = "indented line\n  more indented\nback to the block indent".into();
         assert_eq!(work_line(input), Ok(("", expected)));
     }
 
     #[test]
     fn test_work_block_complex() {
-        let input = r#"work: ```
-if [ "$DEBUG" = "1" ]; then
-    cargo build
-else
-    cargo build --release
-fi
-```
+        let input = r#"work:
+    if [ "$DEBUG" = "1" ]; then
+        cargo build
+    else
+        cargo build --release
+    fi
 "#;
         let expected = "if [ \"$DEBUG\" = \"1\" ]; then\n    cargo build\nelse\n    cargo build --release\nfi".into();
         assert_eq!(work_line(input), Ok(("", expected)));
     }
 
     #[test]
-    fn test_work_block_empty() {
-        let input = "work: ```\n```\n";
-        let expected = "".into();
-        assert_eq!(work_line(input), Ok(("", expected)));
-    }
-
-    #[test]
     fn test_work_block_with_empty_lines() {
-        let input = "work: ```\necho start\n\necho end\n```\n";
+        let input = "work:\n    echo start\n\n    echo end\n";
         let expected = "echo start\n\necho end".into();
         assert_eq!(work_line(input), Ok(("", expected)));
     }
 
     #[test]
     fn test_work_block_with_heredoc_content() {
-        let input = r#"work: ```
-cat << 'EOF'
-This is a heredoc
-with multiple lines
-EOF
-```
+        let input = r#"work:
+    cat << 'EOF'
+    This is a heredoc
+    with multiple lines
+    EOF
 "#;
         let expected = "cat << 'EOF'\nThis is a heredoc\nwith multiple lines\nEOF".into();
         assert_eq!(work_line(input), Ok(("", expected)));
+    }
+
+    #[test]
+    fn test_work_verbatim_block() {
+        let input = "work:\n    cd web\n    npm ci\n    npm run build\nafter: x\n";
+        let (remaining, command) = work_line(input).unwrap();
+        assert_eq!(command, "cd web\nnpm ci\nnpm run build");
+        assert_eq!(remaining, "after: x\n");
+    }
+
+    #[test]
+    fn test_work_verbatim_block_keeps_relative_indent_and_inner_blank_lines() {
+        let input = "work:\n\tif true; then\n\t    echo yes\n\n\tfi\n\n[.next]\n";
+        let (remaining, command) = work_line(input).unwrap();
+        assert_eq!(command, "if true; then\n    echo yes\n\nfi");
+        assert_eq!(remaining, "[.next]\n");
+    }
+
+    #[test]
+    fn test_work_verbatim_block_mixed_indent_does_not_panic() {
+        // Tab vs. spaces: no common prefix, lines keep their own indentation.
+        let input = "work:\n\techo a\n    echo b\n";
+        let (_, command) = work_line(input).unwrap();
+        assert_eq!(command, "\techo a\n    echo b");
+    }
+
+    #[test]
+    fn test_work_verbatim_block_at_eof_without_newline() {
+        let (remaining, command) = work_line("work:\n  make").unwrap();
+        assert_eq!(command, "make");
+        assert_eq!(remaining, "");
+    }
+
+    #[test]
+    fn test_work_verbatim_block_trailing_whitespace_after_colon() {
+        let (_, command) = work_line("work:   \n  make\n").unwrap();
+        assert_eq!(command, "make");
+    }
+
+    #[test]
+    fn test_work_verbatim_block_empty_is_error() {
+        assert!(work_line("work:\nafter: x\n").is_err());
+    }
+
+    #[test]
+    fn test_help_line() {
+        assert_eq!(help_line("help: Build all crates  \n"), Ok(("", "Build all crates".into())));
+        assert_eq!(help_line("help: last line"), Ok(("", "last line".into())));
+    }
+
+    #[test]
+    fn test_work_continuation_stops_at_help() {
+        let input = "work: make\n  help: not a flag\n";
+        let (remaining, command) = work_line(input).unwrap();
+        assert_eq!(command, "make");
+        assert_eq!(remaining, "  help: not a flag\n");
     }
 
     #[test]
@@ -615,7 +713,7 @@ EOF
         let single = "work: echo hello\n";
         let single_expected = "echo hello".into();
         
-        let block = "work: ```\necho hello\n```\n";
+        let block = "work:\n    echo hello\n";
         let block_expected = "echo hello".into();
         
         assert_eq!(work_line(single), Ok(("", single_expected)));
@@ -659,6 +757,23 @@ EOF
         assert_eq!(
             output_line("output: .build/**, dist/\n"),
             Ok(("", vec![".build/**".into(), "dist/".into()]))
+        );
+    }
+
+    #[test]
+    fn test_input_line_exclude_single() {
+        assert_eq!(
+            input_line("input: src/**, !src/gen/**\n"),
+            Ok(("", vec!["src/**".into(), "!src/gen/**".into()]))
+        );
+    }
+
+    #[test]
+    fn test_input_line_exclude_multiline() {
+        let input = "input:\n  **/*.rs\n  !firmware/**\n";
+        assert_eq!(
+            input_line(input),
+            Ok(("", vec!["**/*.rs".into(), "!firmware/**".into()]))
         );
     }
 

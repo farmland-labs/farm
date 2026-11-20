@@ -33,7 +33,7 @@ anyhow = "1.0"
 atty = "0.2"
 blake3 = "1.5"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.4", features = ["derive", "env"] }
 colored = "2.0"
 dotenvy = "0.15"
 glob = "0.3"
@@ -58,6 +58,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.6", features = ["v4", "v7", "serde"] }
 similar = "3.1.1"
+clap_complete = { version = "4.6.12", features = ["unstable-dynamic"] }
 
 # Interactive-mode stdin teardown + terminal-resize (SIGWINCH) forwarding are
 # Unix-only; the Windows path (ConPTY) is validated separately — see ADR-081.

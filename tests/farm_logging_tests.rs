@@ -54,9 +54,8 @@ version: 1
 debug
 
 [operation.test]
-work: ```
-echo "Default mode test"
-```
+work:
+    echo "Default mode test"
 "#;
     
     fs::write(workspace.join("Farmfile"), farmfile_content).unwrap();
@@ -104,9 +103,8 @@ version: 1
 debug
 
 [operation.test]
-work: ```
-echo "Split mode test"
-```
+work:
+    echo "Split mode test"
 "#;
     
     fs::write(workspace.join("Farmfile"), farmfile_content).unwrap();
@@ -155,9 +153,8 @@ version: 1
 debug
 
 [operation.test]
-work: ```
-echo "Hello from stdout test"
-```
+work:
+    echo "Hello from stdout test"
 "#;
     
     fs::write(workspace.join("Farmfile"), farmfile_content).unwrap();
@@ -204,9 +201,8 @@ version: 1
 debug
 
 [operation.test]
-work: ```
-echo "Hello from none test"
-```
+work:
+    echo "Hello from none test"
 "#;
     
     fs::write(workspace.join("Farmfile"), farmfile_content).unwrap();
@@ -247,9 +243,8 @@ version: 1
 debug
 
 [operation.test]
-work: ```
-echo "Hello"
-```
+work:
+    echo "Hello"
 "#;
     
     fs::write(workspace.join("Farmfile"), farmfile_content).unwrap();
@@ -282,9 +277,8 @@ version: 1
 debug
 
 [operation.test]
-work: ```
-echo "Default mode test"
-```
+work:
+    echo "Default mode test"
 "#;
     
     fs::write(workspace.join("Farmfile"), farmfile_content).unwrap();

@@ -13,11 +13,10 @@ pub(crate) fn handle_plan_command(farmfile: PathBuf, variant: Option<String>, fo
     
     info!("Reading Farmfile: {}", farmfile.display());
     
-    let plan = match farm::vendor::parse::parse_plan(&content) {
+    let plan = match crate::cmd::farmfile::parse_farmfile(&farmfile, &content) {
         Ok(plan) => plan,
         Err(e) => {
             // Display our rich error message with line numbers and context
-            eprintln!("❌ Failed to parse config file {}:", farmfile.display());
             eprintln!("{}", e);
             std::process::exit(1);
         }
@@ -99,15 +98,22 @@ pub(crate) fn handle_plan_command(farmfile: PathBuf, variant: Option<String>, fo
                     stage.depends.join(", ")
                 };
                 
+                // `  # <help>` suffix from the operation's `help:` line
+                let help_str = match stage.help.as_deref() {
+                    Some(help) if use_colors => format!("  {}", format!("# {help}").dimmed()),
+                    Some(help) => format!("  # {help}"),
+                    None => String::new(),
+                };
+
                 // Print operation with goal indicator if applicable (bold)
                 if let Some(goal_name) = goals_by_operation.get(stage.label.as_str()) {
                     if use_colors {
-                        println!("  {}. {} → {} (depends: {})", i + 1, stage.label, goal_name.yellow().bold(), depends_str);
+                        println!("  {}. {} → {} (depends: {}){}", i + 1, stage.label, goal_name.yellow().bold(), depends_str, help_str);
                     } else {
-                        println!("  {}. {} → {} (depends: {})", i + 1, stage.label, goal_name, depends_str);
+                        println!("  {}. {} → {} (depends: {}){}", i + 1, stage.label, goal_name, depends_str, help_str);
                     }
                 } else {
-                    println!("  {}. {} (depends: {})", i + 1, stage.label, depends_str);
+                    println!("  {}. {} (depends: {}){}", i + 1, stage.label, depends_str, help_str);
                 }
                 if !stage.tasks.is_empty() {
                     println!("     work: {} task(s)", stage.tasks.len());
@@ -140,8 +146,11 @@ pub(crate) fn handle_plan_command(farmfile: PathBuf, variant: Option<String>, fo
                         "depends": op.depends,
                         "task_count": op.tasks.len(),
                         "goal": goals_by_operation.get(op.label.as_str()),
+                        "help": op.help,
                     })
                 }).collect::<Vec<_>>(),
+                // Skipped (unrecognised) Farmfile content, `[{line, message}]`
+                "warnings": plan.warnings,
             });
             let json = serde_json::to_string_pretty(&structure)
                 .map_err(|e| format!("Failed to serialize structure to JSON: {}", e))?;

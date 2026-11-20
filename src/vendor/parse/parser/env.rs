@@ -16,6 +16,7 @@
 //! Only whole-line `#` / `//` comments are recognised; `#` inside a value is
 //! kept verbatim.
 
+use super::lenient::{self, Skipped};
 use nom::{
     IResult,
     bytes::complete::{tag, take_till, take_while1},
@@ -26,7 +27,9 @@ use nom::{
 use std::collections::HashMap;
 
 /// Parse a complete `[env]` section into a map of `KEY -> value`.
-pub fn env_section(input: &str) -> IResult<&str, HashMap<String, String>> {
+///
+/// Unrecognised lines are skipped and returned as [`Skipped`].
+pub(crate) fn env_section(input: &str) -> IResult<&str, (HashMap<String, String>, Vec<Skipped<'_>>)> {
     use nom::error::Error;
     use super::general::comment_line;
 
@@ -39,6 +42,7 @@ pub fn env_section(input: &str) -> IResult<&str, HashMap<String, String>> {
     let (mut remaining, _) = header.parse(input)?;
 
     let mut vars = HashMap::new();
+    let mut skipped = Vec::new();
 
     loop {
         // Skip blank lines and whole-line comments.
@@ -51,11 +55,15 @@ pub fn env_section(input: &str) -> IResult<&str, HashMap<String, String>> {
                 remaining = new_input;
                 continue;
             }
+            if let Some(new_input) = lenient::skip_blank_line(remaining) {
+                remaining = new_input;
+                continue;
+            }
             break;
         }
 
-        // Stop at EOF or the start of the next section.
-        if remaining.is_empty() || remaining.starts_with('[') {
+        // Stop at EOF, the start of the next section or a decorator.
+        if lenient::at_section_end(remaining) {
             break;
         }
 
@@ -65,10 +73,10 @@ pub fn env_section(input: &str) -> IResult<&str, HashMap<String, String>> {
             continue;
         }
 
-        break;
+        remaining = lenient::skip_unrecognised(remaining, "in [env] section", &mut skipped);
     }
 
-    Ok((remaining, vars))
+    Ok((remaining, (vars, skipped)))
 }
 
 /// Parse a single `KEY=value` assignment line. The key is alphanumeric plus
@@ -96,7 +104,7 @@ mod tests {
     #[test]
     fn test_env_section_basic() {
         let input = "[env]\nNODE_ENV=production\nRUST_LOG=debug\n";
-        let (remaining, vars) = env_section(input).unwrap();
+        let (remaining, (vars, _)) = env_section(input).unwrap();
         assert!(remaining.is_empty());
         assert_eq!(vars.get("NODE_ENV"), Some(&"production".to_string()));
         assert_eq!(vars.get("RUST_LOG"), Some(&"debug".to_string()));
@@ -105,14 +113,14 @@ mod tests {
     #[test]
     fn test_env_section_value_with_spaces() {
         let input = "[env]\nGREETING=hello world\n";
-        let (_remaining, vars) = env_section(input).unwrap();
+        let (_remaining, (vars, _)) = env_section(input).unwrap();
         assert_eq!(vars.get("GREETING"), Some(&"hello world".to_string()));
     }
 
     #[test]
     fn test_env_section_value_with_equals_and_colon() {
         let input = "[env]\nURL=https://x.io/a?b=c\nTOKEN=aGVsbG8=\n";
-        let (_remaining, vars) = env_section(input).unwrap();
+        let (_remaining, (vars, _)) = env_section(input).unwrap();
         assert_eq!(vars.get("URL"), Some(&"https://x.io/a?b=c".to_string()));
         assert_eq!(vars.get("TOKEN"), Some(&"aGVsbG8=".to_string()));
     }
@@ -120,14 +128,14 @@ mod tests {
     #[test]
     fn test_env_section_hash_in_value_is_kept() {
         let input = "[env]\nCOLOR=#ff0000\n";
-        let (_remaining, vars) = env_section(input).unwrap();
+        let (_remaining, (vars, _)) = env_section(input).unwrap();
         assert_eq!(vars.get("COLOR"), Some(&"#ff0000".to_string()));
     }
 
     #[test]
     fn test_env_section_with_comments_and_blanks() {
         let input = "[env]\n# a comment\nA=1\n\n// another\nB=2\n";
-        let (_remaining, vars) = env_section(input).unwrap();
+        let (_remaining, (vars, _)) = env_section(input).unwrap();
         assert_eq!(vars.get("A"), Some(&"1".to_string()));
         assert_eq!(vars.get("B"), Some(&"2".to_string()));
         assert_eq!(vars.len(), 2);
@@ -136,14 +144,14 @@ mod tests {
     #[test]
     fn test_env_section_empty_value() {
         let input = "[env]\nEMPTY=\n";
-        let (_remaining, vars) = env_section(input).unwrap();
+        let (_remaining, (vars, _)) = env_section(input).unwrap();
         assert_eq!(vars.get("EMPTY"), Some(&"".to_string()));
     }
 
     #[test]
     fn test_env_section_stops_at_next_section() {
         let input = "[env]\nA=1\n[operation.build]\n";
-        let (remaining, vars) = env_section(input).unwrap();
+        let (remaining, (vars, _)) = env_section(input).unwrap();
         assert_eq!(remaining, "[operation.build]\n");
         assert_eq!(vars.get("A"), Some(&"1".to_string()));
     }

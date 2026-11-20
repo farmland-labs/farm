@@ -7,9 +7,14 @@ use nom::character::complete::{char, line_ending};
 use nom::sequence::{delimited, preceded, terminated};
 use nom::combinator::opt;
 
-use super::general::{work_line, after_line, plugin_comment_line, input_line, output_line, env_line};
+use super::general::{work_line, after_line, help_line, plugin_comment_line, comment_line, input_line, output_line, env_line};
+use super::lenient::{self, Skipped};
 use crate::vendor::parse::task::Task;
 use crate::vendor::parse::plan::Operation;
+
+/// Fields an operation understands. An unknown field is skipped with a
+/// warning; one of these with an invalid value is a hard error.
+const KNOWN_FIELDS: &[&str] = &["work", "after", "help", "input", "output", "env", "variant"];
 
 /// Parse and skip a variant line (variant are ignored at operation level)
 fn parse_and_skip_variant_line(input: &str) -> IResult<&str, ()> {
@@ -26,17 +31,25 @@ fn parse_and_skip_variant_line(input: &str) -> IResult<&str, ()> {
 
 /// `operation_tag` parses a tag name of an operation.
 /// The tag name is a sequence of alphanumeric characters, underscores, and hyphens.
+/// The `operation` keyword is optional: a leading `.` alone is the short form.
 /// 
 /// # Examples
 /// ```text
 ///     "operation" =>  "root"
 ///     "operation.build"   =>  "build"
 ///     "operation.debug_config" => "debug_config"
+///     ".build"    =>  "build"
 /// ```
 pub fn operation_tag(input: &str) -> IResult<&str, String> {
     // Define identifier pattern: alphanumeric, underscore, hyphen
-    let identifier = take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-');
-    let name = preceded(tag("."), identifier);
+    let identifier = || take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-');
+
+    // Short form: `.name`
+    if let Ok((input, name)) = preceded(tag("."), identifier()).parse(input) {
+        return Ok((input, name.to_string()));
+    }
+
+    let name = preceded(tag("."), identifier());
     let (input, (_, tag_name)) = (tag("operation"), opt(name)).parse(input)?;
     match tag_name {
         Some(name) => Ok((input, name.to_string())),
@@ -51,6 +64,7 @@ pub fn operation_tag(input: &str) -> IResult<&str, String> {
 /// ```text
 ///     "[operation]"   =>  "root"
 ///     "[operation.build]" =>  "build"
+///     "[.build]"  =>  "build"
 /// ```
 pub fn operation_header(input: &str) -> IResult<&str, String> {
     let (input, name) = terminated(delimited(char('['), operation_tag, char(']')), line_ending).parse(input)?;
@@ -74,13 +88,28 @@ pub fn operation_header(input: &str) -> IResult<&str, String> {
 ///     after: prepare
 /// ```
 /// 
+/// Short form: `[.name]` header, `help:` and a multi-line `work:` block:
+/// ```text
+/// [.build]
+/// help: Build the project
+/// after: prepare
+/// work:
+///     cd src
+///     make build
+/// ```
+///
 /// Or the old style (still supported for backward compatibility):
 /// ```text
 /// [operation.build]
 ///     //! parcel: compress=true
 ///     work: make build
 /// ```
-pub fn operation_section(input: &str) -> IResult<&str, Operation> {
+///
+/// The body ends at the next `[...]` header, a `//!` decorator after the work
+/// lines, or EOF. Unknown fields and unrecognised lines in between are skipped
+/// (see [`lenient`]) and returned as [`Skipped`]. A known field whose value does
+/// not parse is a hard error (`nom::Err::Failure` positioned at that line).
+pub(crate) fn operation_section(input: &str) -> IResult<&str, (Operation, Vec<Skipped<'_>>)> {
     // Parse the operation header
     let (input, label) = operation_header(input)?;
     
@@ -92,6 +121,8 @@ pub fn operation_section(input: &str) -> IResult<&str, Operation> {
     
     // Track whether we've started parsing the operation body (work lines)
     let mut has_work_lines = false;
+
+    let mut skipped = Vec::new();
     
     loop {
         // Try to parse each type of line
@@ -104,6 +135,13 @@ pub fn operation_section(input: &str) -> IResult<&str, Operation> {
         
         if let Ok((new_input, deps)) = after_line(remaining) {
             operation.depends = deps;
+            remaining = new_input;
+            continue;
+        }
+
+        // Parse help line (short description shown in `farm plan` and completions)
+        if let Ok((new_input, help)) = help_line(remaining) {
+            operation.help = Some(help);
             remaining = new_input;
             continue;
         }
@@ -153,12 +191,45 @@ pub fn operation_section(input: &str) -> IResult<&str, Operation> {
             remaining = new_input;
             continue;
         }
-        
-        // If we can't parse anything else, we're done with this section
-        break;
+
+        // Skip whitespace-only lines
+        if !remaining.is_empty() && lenient::first_line(remaining).trim().is_empty() {
+            remaining = remaining.find('\n').map(|i| &remaining[i + 1..]).unwrap_or("");
+            continue;
+        }
+
+        // Skip whole-line comments (`//`, `#`) inside the body
+        if let Ok((new_input, _)) = comment_line(remaining) {
+            remaining = new_input;
+            continue;
+        }
+
+        // Next section, a decorator for the next operation, or EOF
+        if lenient::at_section_end(remaining) {
+            break;
+        }
+
+        // A known field that did not parse above has an invalid value: the
+        // file violates syntax this parser knows, which is a hard error.
+        let field = lenient::field_name(remaining);
+        if field.is_some_and(|f| KNOWN_FIELDS.contains(&f)) {
+            return Err(nom::Err::Failure(nom::error::Error::new(remaining, nom::error::ErrorKind::Verify)));
+        }
+
+        // Anything else is unknown (newer/older Farmfile or corrupted): skip it
+        // together with its indented continuation lines.
+        let message = match field {
+            Some(f) => format!("unknown field '{}' in operation '{}'", f, operation.label),
+            None if remaining.starts_with([' ', '\t']) => format!(
+                "unexpected indented line '{}' in operation '{}'", lenient::excerpt(remaining), operation.label
+            ),
+            None => format!("unrecognised line '{}' in operation '{}'", lenient::excerpt(remaining), operation.label),
+        };
+        skipped.push(Skipped::new(remaining, message));
+        remaining = lenient::skip_line_and_continuation(remaining);
     }
     
-    Ok((remaining, operation))
+    Ok((remaining, (operation, skipped)))
 }
 
 #[cfg(test)]
@@ -179,9 +250,49 @@ mod tests {
     }
 
     #[test]
+    fn test_operation_tag_short_form() {
+        assert_eq!(operation_tag(".build").unwrap(), ("", "build".to_string()));
+        assert_eq!(operation_tag(".debug-config_2").unwrap(), ("", "debug-config_2".to_string()));
+        // A bare `.` has no name.
+        assert!(operation_tag(".").is_err());
+    }
+
+    #[test]
+    fn test_operation_header_short_form() {
+        assert_eq!(operation_header("[.build]\n").unwrap(), ("", "build".to_string()));
+        assert!(operation_header("[.]\n").is_err());
+        assert!(operation_header("[build]\n").is_err(), "bare names are reserved for built-in sections");
+    }
+
+    #[test]
+    fn test_short_form_operation_section() {
+        let input = "[.build]\nhelp: Build all crates\nafter: prepare\nwork:\n    cd crates\n    cargo build\n";
+        let (remaining, (operation, _)) = operation_section(input).unwrap();
+
+        assert_eq!(remaining, "");
+        assert_eq!(operation.label, "build");
+        assert_eq!(operation.help.as_deref(), Some("Build all crates"));
+        assert_eq!(operation.depends, vec!["prepare"]);
+        assert_eq!(operation.tasks.len(), 1);
+        assert_eq!(operation.tasks[0].command(), Some("cd crates\ncargo build"));
+    }
+
+    #[test]
+    fn test_operation_verbatim_block_ends_at_next_field() {
+        let input = "[.build]\nwork:\n  make\n\n  make install\n\noutput:\n  dist/**\n  !dist/tmp/**\nwork: echo done\n";
+        let (remaining, (operation, _)) = operation_section(input).unwrap();
+
+        assert_eq!(remaining, "");
+        assert_eq!(operation.tasks.len(), 2);
+        assert_eq!(operation.tasks[0].command(), Some("make\n\nmake install"));
+        assert_eq!(operation.tasks[1].command(), Some("echo done"));
+        assert_eq!(operation.outputs, vec!["dist/**", "!dist/tmp/**"]);
+    }
+
+    #[test]
     fn test_simple_operation() {
         let input = "[operation.build]\nwork: make build\n";
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.tasks.len(), 1);
@@ -191,7 +302,7 @@ mod tests {
     #[test]
     fn test_operation_with_work() {
         let input = "[operation.build]\nwork: make build\n";
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.tasks.len(), 1);
@@ -200,7 +311,7 @@ mod tests {
     #[test]
     fn test_operation_with_dependencies() {
         let input = "[operation.build]\nwork: make build\nafter: prepare, setup\n";
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.depends, vec!["prepare", "setup"]);
@@ -210,7 +321,7 @@ mod tests {
     #[test]
     fn test_complex_operation() {
         let input = "[operation.build]\nwork: make build VARIANT=debug\nafter: prepare\n";
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.depends, vec!["prepare"]);
@@ -221,14 +332,13 @@ mod tests {
     #[test]
     fn test_operation_with_multiline_work() {
         let input = r#"[operation.build]
-work: ```
-set -e
-echo "Building..."
-cargo build --release
-```
+work:
+    set -e
+    echo "Building..."
+    cargo build --release
 after: prepare
 "#;
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.tasks.len(), 1);
@@ -243,16 +353,15 @@ after: prepare
     fn test_operation_mixed_work_types() {
         let input = r#"[operation.build]
 work: echo "Starting build"
-work: ```
-if [ "$DEBUG" = "1" ]; then
-    cargo build
-else
-    cargo build --release
-fi
-```
+work:
+    if [ "$DEBUG" = "1" ]; then
+        cargo build
+    else
+        cargo build --release
+    fi
 work: echo "Build complete"
 "#;
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.tasks.len(), 3);
@@ -269,7 +378,7 @@ work: echo "Build complete"
         let input = "[operation.establish_well]\nvariant: sunburst_premium, classic_bulk\nwork: echo 'Installing irrigation system...'\n";
         let result = operation_section(input);
         assert!(result.is_ok(), "Failed to parse sunflower oil format: {:?}", result);
-        let (remaining, parsed_op) = result.unwrap();
+        let (remaining, (parsed_op, _)) = result.unwrap();
         assert_eq!(remaining, "");
         assert_eq!(parsed_op.label, "establish_well");
         assert_eq!(parsed_op.tasks.len(), 1);
@@ -287,7 +396,7 @@ work: echo "Build complete"
         let result = operation_section(input);
         assert!(result.is_ok(), "Should parse operation with variant line: {:?}", result);
         
-        let (remaining, parsed_op) = result.unwrap();
+        let (remaining, (parsed_op, _)) = result.unwrap();
         assert_eq!(remaining, "");
         assert_eq!(parsed_op.label, "test_op");
         
@@ -315,7 +424,7 @@ work: echo "Build complete"
             let result = operation_section(test_case);
             assert!(result.is_ok(), "Test case {} failed: {:?}", i, result);
             
-            let (remaining, parsed_op) = result.unwrap();
+            let (remaining, (parsed_op, _)) = result.unwrap();
             assert_eq!(remaining, "");
             assert_eq!(parsed_op.tasks.len(), 1, "Test case {} should have exactly 1 task", i);
         }
@@ -330,7 +439,7 @@ work: echo "Build complete"
 work: make build
 after: prepare
 "#;
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "build");
         assert_eq!(operation.tasks.len(), 1);
@@ -359,7 +468,7 @@ after: prepare
 work: echo "Starting deployment"
 work: ./deploy.sh
 "#;
-        let (_, operation) = operation_section(input).unwrap();
+        let (_, (operation, _)) = operation_section(input).unwrap();
         
         assert_eq!(operation.label, "deploy");
         assert_eq!(operation.tasks.len(), 2);

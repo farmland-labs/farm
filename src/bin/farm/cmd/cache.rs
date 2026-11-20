@@ -430,8 +430,7 @@ pub(crate) fn handle_cache_command(command: CacheCommands) -> Result<(), Box<dyn
             }
             
             let content = std::fs::read_to_string(&farmfile_path)?;
-            let plan = farm::vendor::parse::parse_plan(&content)
-                .map_err(|e| format!("Failed to parse Farmfile: {}", e))?;
+            let plan = crate::cmd::farmfile::parse_farmfile(&farmfile_path, &content)?;
             
             println!("🔍 Checking input/output declarations for operations: {}", operations.join(" → "));
             println!();
