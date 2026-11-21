@@ -347,8 +347,8 @@ farm reads these from the environment:
 | `RUST_LOG` | Logging level (e.g. `farm=debug`, `farm::cache=debug`) |
 
 During a run, farm also **sets** these for each operation's command:
-`FARM_TARGET`, `FARM_VARIANT`, `FARM_WORKSPACE`, `FARM_DIR`, `FARM_LOG_DIR`,
-`FARM_EVENT` (plus anything from the `[env]` section). Operations run
+`FARM_TARGET`, `FARM_VARIANT`, `FARM_WORKSPACE`, `FARM_DIR`, `FARM_LOG_DIR`
+(plus anything from the `[env]` section). Operations run
 **non-interactively** — their stdin is `/dev/null`, so a process that prompts
 for input gets EOF and fails fast rather than hanging.
 

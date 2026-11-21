@@ -46,9 +46,23 @@ pub fn is_exclude(pattern: &str) -> bool {
 
 /// Validate one pattern list; `field` is the Farmfile field name for messages.
 ///
-/// A list with excludes but no includes selects nothing, which is always a mistake.
+/// Every pattern must be valid glob syntax (an exclude ending in `/` is checked
+/// as `dir/**`, the form it is compiled to), and a list with excludes but no
+/// includes selects nothing, which is always a mistake.
 pub fn validate_patterns(field: &str, patterns: &[String]) -> Result<(), String> {
     let split = split_patterns(patterns);
+    for include in &split.includes {
+        glob::Pattern::new(include)
+            .map_err(|e| format!("invalid '{field}' pattern '{include}': {e}"))?;
+    }
+    for exclude in &split.excludes {
+        let normalized = match exclude.strip_suffix('/') {
+            Some(dir) => format!("{dir}/**"),
+            None => exclude.to_string(),
+        };
+        glob::Pattern::new(&normalized)
+            .map_err(|e| format!("invalid '{field}' exclude pattern '!{exclude}': {e}"))?;
+    }
     if split.includes.is_empty() && !split.excludes.is_empty() {
         return Err(format!(
             "'{field}' has only exclude patterns ({}); add at least one include pattern",
@@ -82,5 +96,19 @@ mod tests {
 
         let err = validate_patterns("output", &s(&["!dist/**"])).unwrap_err();
         assert!(err.contains("'output' has only exclude patterns"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_patterns_rejects_bad_glob_syntax() {
+        assert!(validate_patterns("input", &s(&["**", "!firmware/", "!build/**/*.o"])).is_ok());
+
+        let err = validate_patterns("input", &s(&["**", "!firmware/**.*"])).unwrap_err();
+        assert!(err.contains("invalid 'input' exclude pattern '!firmware/**.*'"), "{err}");
+
+        let err = validate_patterns("output", &s(&["dist/**.bin"])).unwrap_err();
+        assert!(err.contains("invalid 'output' pattern 'dist/**.bin'"), "{err}");
+
+        let err = validate_patterns("input", &s(&["src/[abc"])).unwrap_err();
+        assert!(err.contains("invalid 'input' pattern 'src/[abc'"), "{err}");
     }
 }

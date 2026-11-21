@@ -469,9 +469,11 @@ impl Executor {
                     None
                 }
                 Err(e) => {
-                    // Failed to compute key - proceed without caching
-                    debug!(stage = %stage.label, error = %e, "Failed to compute target key");
-                    None
+                    // Patterns are validated when the Farmfile loads, so this is
+                    // an I/O or glob traversal failure: fail rather than silently
+                    // running the stage uncached.
+                    error!(stage = %stage.label, error = %e, "Failed to compute target key");
+                    return Err(format!("Stage '{}': failed to compute cache key: {}", stage.label, e));
                 }
             }
         } else if !stage.inputs.is_empty() && stage.outputs.is_empty() {
@@ -507,10 +509,6 @@ impl Executor {
         env.map.insert("FARM_WORKSPACE".into(), exec_ctx.workspace.to_string_lossy().to_string().into());
         env.map.insert("FARM_DIR".into(), exec_ctx.farm_dir.to_string_lossy().to_string().into());
         env.map.insert("FARM_LOG_DIR".into(), exec_ctx.logger.log_dir().to_string_lossy().to_string().into());
-        
-        // Set FARM_EVENT to point to the event.json file in the farm directory
-        let event_file_path = exec_ctx.farm_dir.join("event.json");
-        env.map.insert("FARM_EVENT".into(), event_file_path.to_string_lossy().to_string().into());
         
         let task_ctx = Context {
             env: &env,
@@ -681,35 +679,6 @@ mod tests {
     }
 
     #[test]
-    fn test_farm_event_environment_setup() {
-        use std::path::PathBuf;
-        
-        // Test that FARM_EVENT environment variable is properly set up
-        let farm_dir = PathBuf::from("/data/farm/work/.farm");
-        let expected_event_path = farm_dir.join("event.json");
-        
-        // Create environment with FARM_EVENT
-        let mut env = CapturedEnv::new();
-        env.map.insert("FARM_EVENT".into(), expected_event_path.to_string_lossy().to_string().into());
-        
-        // Verify the environment variable is set correctly
-        let farm_event = env.map.get(&OsString::from("FARM_EVENT"));
-        assert!(farm_event.is_some(), "FARM_EVENT should be set in environment");
-        assert_eq!(farm_event.unwrap(), &OsString::from("/data/farm/work/.farm/event.json"), "FARM_EVENT should point to event.json file");
-        
-        // Test with different workspace path
-        let farm_dir2 = PathBuf::from("/tmp/workspace_123/.farm");
-        let expected_event_path2 = farm_dir2.join("event.json");
-        
-        let mut env2 = CapturedEnv::new();
-        env2.map.insert("FARM_EVENT".into(), expected_event_path2.to_string_lossy().to_string().into());
-        
-        let farm_event2 = env2.map.get(&OsString::from("FARM_EVENT"));
-        assert!(farm_event2.is_some(), "FARM_EVENT should be set for different workspace");
-        assert_eq!(farm_event2.unwrap(), &OsString::from("/tmp/workspace_123/.farm/event.json"), "FARM_EVENT should point to correct workspace event.json");
-    }
-
-    #[test]
     fn test_farm_environment_variables_complete() {
         // Test that all FARM_* environment variables are properly set up
         let mut env = CapturedEnv::new();
@@ -720,7 +689,6 @@ mod tests {
         env.map.insert("FARM_WORKSPACE".into(), "/data/farm/work".into());
         env.map.insert("FARM_DIR".into(), "/data/farm/work/.farm".into());
         env.map.insert("FARM_LOG_DIR".into(), "/data/farm/work/.farm/debug/logs".into());
-        env.map.insert("FARM_EVENT".into(), "/data/farm/work/.farm/event.json".into());
         
         // Verify all variables are set correctly
         assert_eq!(env.map.get(&OsString::from("FARM_VARIANT")).unwrap(), &OsString::from("debug"), "FARM_VARIANT should be set");
@@ -728,7 +696,6 @@ mod tests {
         assert_eq!(env.map.get(&OsString::from("FARM_WORKSPACE")).unwrap(), &OsString::from("/data/farm/work"), "FARM_WORKSPACE should be set");
         assert_eq!(env.map.get(&OsString::from("FARM_DIR")).unwrap(), &OsString::from("/data/farm/work/.farm"), "FARM_DIR should be set");
         assert_eq!(env.map.get(&OsString::from("FARM_LOG_DIR")).unwrap(), &OsString::from("/data/farm/work/.farm/debug/logs"), "FARM_LOG_DIR should be set");
-        assert_eq!(env.map.get(&OsString::from("FARM_EVENT")).unwrap(), &OsString::from("/data/farm/work/.farm/event.json"), "FARM_EVENT should be set");
     }
 
     #[test]
