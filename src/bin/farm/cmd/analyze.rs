@@ -34,7 +34,15 @@ pub(crate) fn handle_analyze_run(
     
     // Determine what patterns to track
     let patterns: Vec<String> = if track_workspace {
-        vec!["**/*".to_string()]
+        // The whole workspace, plus any --track-path (e.g. absolute paths
+        // outside the workspace, or `!` excludes).
+        let mut patterns = vec!["**/*".to_string()];
+        for p in &track_paths {
+            if !patterns.contains(p) {
+                patterns.push(p.clone());
+            }
+        }
+        patterns
     } else {
         // Track declared output from dependencies
         let mut patterns = track_paths.clone();
@@ -106,7 +114,9 @@ pub(crate) fn handle_analyze_run(
             workspace.join(pattern).to_string_lossy().to_string()
         };
         
-        if let Ok(paths) = glob::glob(&full_pattern) {
+        let paths = glob::glob(&full_pattern)
+            .map_err(|e| format!("Invalid track pattern '{}': {}", pattern, e))?;
+        {
             for entry in paths.flatten() {
                 scanned_count += 1;
                 
@@ -153,8 +163,8 @@ pub(crate) fn handle_analyze_run(
                     p.to_string()
                 }
             })
-            .filter_map(|p| glob::Pattern::new(&p).ok())
-            .collect()
+            .map(|p| glob::Pattern::new(&p).map_err(|e| format!("Invalid exclude pattern '{}': {}", p, e)))
+            .collect::<Result<_, _>>()?
     } else {
         Vec::new()
     };
@@ -211,7 +221,9 @@ pub(crate) fn handle_analyze_run(
             workspace.join(pattern).to_string_lossy().to_string()
         };
         
-        if let Ok(paths) = glob::glob(&full_pattern) {
+        let paths = glob::glob(&full_pattern)
+            .map_err(|e| format!("Invalid track pattern '{}': {}", pattern, e))?;
+        {
             for entry in paths.flatten() {
                 after_scanned += 1;
                 if after_scanned.is_multiple_of(1000) {
