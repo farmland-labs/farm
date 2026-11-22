@@ -310,17 +310,26 @@ pub(crate) enum Commands {
     /// Every run keeps its own log, so a failing run can be compared against
     /// the last working one. Run history is bounded automatically.
     #[command(after_help = "\
+RUN can be:
+    test                         the most recent `test` run
+    test@2 / @2                  2 runs back, within `test` / within all runs (@0 = newest)
+    7d8e1a                       a build ID, or a unique prefix/suffix of one (>= 4 chars);
+                                 `--list` highlights the short form
+
 EXAMPLES:
     farm log                     Log of the most recent run, whatever the goal
     farm log test                Log of the most recent `test` run
-    farm log test --list         Recent `test` runs, newest first
+    farm log test --list         Recent `test` runs, newest first, numbered @0, @1, ...
+    farm log test@2              Log of the `test` run 2 back
+    farm log 7d8e1a              Log of that run
     farm log test --diff         Compare the last two `test` runs
-    farm log test --diff --against 3   Compare against 3 runs back
+    farm log test --diff @3      Compare the latest `test` run against @3
+    farm log 7d8e1a --diff 5d2f21    Compare two specific runs (5d2f21 = older side)
     farm log test --follow       Follow a run as it executes")]
     Log {
-        /// Goal to show logs for. Omit for the most recent run of any goal.
-        #[arg(add = ArgValueCandidates::new(crate::cmd::completion::target_candidates))]
-        goal: Option<String>,
+        /// Goal or run to show (see RUN below). Omit for the most recent run.
+        #[arg(value_name = "RUN", add = ArgValueCandidates::new(crate::cmd::completion::log_run_candidates))]
+        run: Option<String>,
 
         /// Restrict to one variant. Omit to match any.
         #[arg(long)]
@@ -330,13 +339,20 @@ EXAMPLES:
         #[arg(long, short = 'l')]
         list: bool,
 
-        /// Diff the latest run against an earlier one
-        #[arg(long, short = 'd')]
-        diff: bool,
+        /// Diff RUN against an earlier run: the previous one, or the given RUN
+        /// (`@N` counts within RUN's goal)
+        #[arg(
+            long,
+            short = 'd',
+            value_name = "RUN",
+            num_args = 0..=1,
+            add = ArgValueCandidates::new(crate::cmd::completion::run_candidates)
+        )]
+        diff: Option<Option<String>>,
 
-        /// How many runs back to diff against (default: the previous run)
-        #[arg(long, default_value = "1")]
-        against: usize,
+        /// Diff against the run N before RUN (implies --diff; `--diff` alone = 1)
+        #[arg(long, value_name = "N")]
+        against: Option<usize>,
 
         /// Follow the log as it is written
         #[arg(long, short = 'F')]

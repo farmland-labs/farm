@@ -291,11 +291,18 @@ These paths are internal and change between versions. Read them through
 farm log                          # log of the most recent run, whatever the goal
 farm log -l                       # list the saved logs
 farm log build                    # log of the most recent `build` run
-farm log build --list             # recent `build` runs, newest first
+farm log build --list             # recent `build` runs, newest first, numbered @0, @1, ...
+farm log build@2                  # the `build` run 2 back (@2 alone: across all goals)
+farm log 7d8e1a                   # a run by ID, or a unique prefix/suffix of it
 farm log build --diff             # compare the last two runs
-farm log build --diff --against 3 # compare against 3 runs back
+farm log build --diff @3          # compare the latest against @3 (or --against 3)
+farm log 7d8e1a --diff 5d2f21     # compare two specific runs (5d2f21 = older side)
 farm log build --follow           # follow a run as it executes
 ```
+
+`--list` highlights each run's short ID (the tail of its build ID); with shell
+completion enabled, `farm log <TAB>` offers recent runs by short ID with their
+goal, status and time. `farm replay` accepts the same run forms.
 
 Diffs are normalized first: timestamps, durations, run directory names and
 progress-bar redraws are stripped, so what remains is what actually changed

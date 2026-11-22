@@ -94,3 +94,46 @@ pub(crate) fn target_candidates() -> Vec<CompletionCandidate> {
 
     goal_candidates.chain(operation_candidates).collect()
 }
+
+/// How many recent runs completion offers.
+const RUN_CANDIDATES: usize = 20;
+
+/// Recent runs as their short ID (see `farm log --list`), described by goal,
+/// status, start time and duration, newest first. Falls back to the full build
+/// ID where two runs share a short ID.
+pub(crate) fn run_candidates() -> Vec<CompletionCandidate> {
+    let Ok(farm_dir) = crate::cmd::log::farm_dir() else {
+        return Vec::new();
+    };
+    let runs = farm::runs::list_runs(&farm_dir);
+    let recent = &runs[..runs.len().min(RUN_CANDIDATES)];
+
+    recent
+        .iter()
+        .enumerate()
+        .map(|(i, run)| {
+            let short = run.short_id();
+            let unique = runs.iter().filter(|r| r.build_id.ends_with(short)).count() == 1;
+            let value = if unique { short } else { run.build_id.as_str() };
+            let help = format!(
+                "{} {} {} {}",
+                run.goal().unwrap_or("?"),
+                crate::cmd::log::status_word(run),
+                crate::cmd::log::started_local(run),
+                crate::cmd::log::duration(run),
+            );
+            CompletionCandidate::new(value)
+                .help(Some(help.into()))
+                .tag(Some("runs".into()))
+                // Keep newest-first order rather than the shell's alphabetical sort.
+                .display_order(Some(2 + i))
+        })
+        .collect()
+}
+
+/// `farm log RUN`: goals and operations, then recent runs.
+pub(crate) fn log_run_candidates() -> Vec<CompletionCandidate> {
+    let mut candidates = target_candidates();
+    candidates.extend(run_candidates());
+    candidates
+}
