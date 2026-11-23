@@ -42,6 +42,26 @@ pub fn init() {
     init_with_default("off")
 }
 
+/// Initialize the farm logging system for a specific service
+/// 
+/// This is the recommended way to initialize logging in farm services.
+/// It sets sensible defaults for the service while respecting RUST_LOG override.
+/// 
+/// # Arguments
+/// * `service_name` - The crate/service name
+/// * `verbose` - If true, uses "debug" level; otherwise uses "info"
+/// 
+/// # Example
+/// ```rust,no_run
+/// // Initialize with verbose logging disabled
+/// farm::vendor::log::init_for_service("farm_lobby", false);
+/// ```
+pub fn init_for_service(service_name: &str, verbose: bool) {
+    let level = if verbose { "debug" } else { "info" };
+    // Include farm_shell at info level so bootstrap banner always shows
+    init_with_default(&format!("{}={},farm_shell={},warn", service_name, level, level))
+}
+
 /// Initialize the farm logging system with a custom default filter
 /// 
 /// The `default_filter` is used when RUST_LOG is not set.
@@ -50,7 +70,7 @@ pub fn init() {
 /// # Example
 /// ```rust
 /// // Initialize with service-specific defaults
-/// farm::vendor::log::init_with_default("farm=info,warn");
+/// farm::vendor::log::init_with_default("farm_lobby=info,warn");
 /// ```
 pub fn init_with_default(default_filter: &str) {
     let env_filter = EnvFilter::try_from_default_env()
@@ -86,17 +106,6 @@ fn should_use_ansi() -> bool {
 // Re-export tracing macros for basic logging
 pub use tracing::{debug, error, info, trace, warn};
 
-// Re-export this module's own `#[macro_export]` macros (defined
-// below) at the `crate::vendor::log::*` namespace too. Without these
-// re-exports the macros are reachable only via the crate root
-// (e.g. `crate::info_icon!`), which is inconvenient inside the
-// vendored layout: most callers expect `crate::vendor::log::info_icon`
-// to mirror the pre-vendor `farm::vendor::log::info_icon` shape.
-pub use crate::{
-    debug_icon, error_icon, exec_end, exec_start, horizontal_in, horizontal_out, incoming_down,
-    incoming_up, info_icon, outgoing_down, outgoing_up, trace_icon, warn_icon,
-};
-
 /// Patterns to detect secret environment variables
 const SECRET_ENV_PATTERNS: &[&str] = &[
     "PASSWORD", "SECRET", "TOKEN", "KEY", "PRIVATE",
@@ -131,14 +140,14 @@ macro_rules! incoming_up {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "incoming_up", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "incoming_up", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "incoming_up", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "incoming_up", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "incoming_up", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "incoming_up", $($arg)+)
     };
 }
 
@@ -148,14 +157,14 @@ macro_rules! outgoing_up {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "outgoing_up", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "outgoing_up", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "outgoing_up", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "outgoing_up", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "outgoing_up", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "outgoing_up", $($arg)+)
     };
 }
 
@@ -165,14 +174,14 @@ macro_rules! incoming_down {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "incoming_down", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "incoming_down", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "incoming_down", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "incoming_down", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "incoming_down", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "incoming_down", $($arg)+)
     };
 }
 
@@ -182,14 +191,14 @@ macro_rules! outgoing_down {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "outgoing_down", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "outgoing_down", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "outgoing_down", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "outgoing_down", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "outgoing_down", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "outgoing_down", $($arg)+)
     };
 }
 
@@ -199,14 +208,14 @@ macro_rules! horizontal_out {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "horizontal_out", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "horizontal_out", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "horizontal_out", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "horizontal_out", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "horizontal_out", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "horizontal_out", $($arg)+)
     };
 }
 
@@ -216,14 +225,14 @@ macro_rules! horizontal_in {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "horizontal_in", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "horizontal_in", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "horizontal_in", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "horizontal_in", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "horizontal_in", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "horizontal_in", $($arg)+)
     };
 }
 
@@ -233,14 +242,14 @@ macro_rules! exec_start {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "exec_start", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "exec_start", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "exec_start", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "exec_start", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "exec_start", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "exec_start", $($arg)+)
     };
 }
 
@@ -250,14 +259,14 @@ macro_rules! exec_end {
     (event = $event:expr, $($arg:tt)+) => {
         {
             let trace_id = $event.traceparent().unwrap_or("unknown");
-            $crate::info!(farm.direction = "exec_end", trace_id = trace_id, $($arg)+)
+            $crate::vendor::log::info!(farm.direction = "exec_end", trace_id = trace_id, $($arg)+)
         }
     };
     (trace_id = $trace_id:expr, $($arg:tt)+) => {
-        $crate::info!(farm.direction = "exec_end", trace_id = $trace_id, $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "exec_end", trace_id = $trace_id, $($arg)+)
     };
     ($($arg:tt)+) => {
-        $crate::info!(farm.direction = "exec_end", $($arg)+)
+        $crate::vendor::log::info!(farm.direction = "exec_end", $($arg)+)
     };
 }
 
@@ -279,7 +288,7 @@ macro_rules! exec_end {
 #[macro_export]
 macro_rules! info_icon {
     ($icon:expr, $($arg:tt)+) => {
-        $crate::info!(farm.icon = $icon, $($arg)+)
+        $crate::vendor::log::info!(farm.icon = $icon, $($arg)+)
     };
 }
 
@@ -287,7 +296,7 @@ macro_rules! info_icon {
 #[macro_export]
 macro_rules! warn_icon {
     ($icon:expr, $($arg:tt)+) => {
-        $crate::warn!(farm.icon = $icon, $($arg)+)
+        $crate::vendor::log::warn!(farm.icon = $icon, $($arg)+)
     };
 }
 
@@ -295,7 +304,7 @@ macro_rules! warn_icon {
 #[macro_export]
 macro_rules! error_icon {
     ($icon:expr, $($arg:tt)+) => {
-        $crate::error!(farm.icon = $icon, $($arg)+)
+        $crate::vendor::log::error!(farm.icon = $icon, $($arg)+)
     };
 }
 
@@ -303,7 +312,7 @@ macro_rules! error_icon {
 #[macro_export]
 macro_rules! debug_icon {
     ($icon:expr, $($arg:tt)+) => {
-        $crate::debug!(farm.icon = $icon, $($arg)+)
+        $crate::vendor::log::debug!(farm.icon = $icon, $($arg)+)
     };
 }
 
@@ -311,7 +320,7 @@ macro_rules! debug_icon {
 #[macro_export]
 macro_rules! trace_icon {
     ($icon:expr, $($arg:tt)+) => {
-        $crate::trace!(farm.icon = $icon, $($arg)+)
+        $crate::vendor::log::trace!(farm.icon = $icon, $($arg)+)
     };
 }
 
@@ -321,13 +330,11 @@ mod tests {
 
     #[test]
     fn test_init() {
-        // Inside the vendored test binary other tests share the
-        // process; a sibling may have installed the global tracing
-        // subscriber already (`SetLoggerError`). Swallowing the
-        // panic keeps the test's original "init doesn't blow up
-        // catastrophically" assertion without flaking on test
-        // ordering. The original farm-log crate had its own test
-        // binary where this couldn't happen.
+        // Other tests in the same process may have installed the
+        // global tracing subscriber already (`SetLoggerError`), e.g.
+        // when this crate is vendored into a host's test binary.
+        // Swallowing the panic keeps the "init doesn't blow up
+        // catastrophically" check without flaking on test ordering.
         let _ = std::panic::catch_unwind(init);
     }
     
@@ -389,3 +396,7 @@ mod tests {
         );
     }
 }
+
+// Generated by scripts/sync-vendor.sh: `#[macro_export]` macros live at the
+// host's crate root; re-export them so `crate::vendor::log::<macro>!` works.
+pub use crate::{debug_icon, error_icon, exec_end, exec_start, horizontal_in, horizontal_out, incoming_down, incoming_up, info_icon, outgoing_down, outgoing_up, trace_icon, warn_icon};

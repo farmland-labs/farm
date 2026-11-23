@@ -6,7 +6,7 @@ use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields};
 use tracing_subscriber::registry::LookupSpan;
 
-use super::direction::Direction;
+use crate::vendor::log::direction::Direction;
 
 /// Custom formatter for farm-log that includes directional arrows
 pub struct FarmLogFormatter {

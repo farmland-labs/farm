@@ -2,12 +2,8 @@
 
 //! Self-contained in-tree modules.
 //!
-//! `parse` and `log` are vendored copies of upstream sources,
-//! kept in-tree so `farm` can be built and shipped standalone
-//! without pulling each one as a separate Cargo dependency.
-//! `protocol` is the first-party schema for the orchestrator-to-
-//! `farm` handoff; it sits here alongside the other self-contained
-//! modules and carries its own contract tests.
+//! `parse`, `log` and `protocol` are vendored copies of the farmland
+//! crates `farm-parse`, `farm-log` and `farm-protocol`.
 
 pub mod log;
 pub mod parse;
