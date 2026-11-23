@@ -186,9 +186,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Commands::Replay { build_dir, dry_run, farmfile }) => {
             handle_replay_command(&build_dir, dry_run, farmfile)
         }
-        Some(Commands::Log { goal, variant, list, diff, against, follow, raw, only_output, path, limit }) => {
+        Some(Commands::Log { run, variant, list, diff, against, follow, raw, only_output, path, limit }) => {
             handle_log_command(crate::cmd::log::LogArgs {
-                goal, variant, list, diff, against, follow, raw, only_output, path, limit,
+                run, variant, list, diff, against, follow, raw, only_output, path, limit,
             })
         }
         Some(Commands::Cache { command }) => {

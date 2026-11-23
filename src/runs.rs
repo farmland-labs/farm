@@ -101,7 +101,27 @@ impl RunEntry {
     pub fn log_dir(&self) -> PathBuf {
         self.dir.join("log")
     }
+
+    /// The last [`SHORT_ID_LEN`] characters of the build ID: what `farm log
+    /// --list` highlights and completion offers. It resolves through the
+    /// unique-suffix rule of [`select`], so it needs no knowledge of the
+    /// directory name format (generated IDs end in random hex, which makes the
+    /// tail the distinctive part). IDs no longer than that are returned whole.
+    pub fn short_id(&self) -> &str {
+        let id = self.build_id.as_str();
+        match id.char_indices().rev().nth(SHORT_ID_LEN - 1) {
+            Some((start, _)) => &id[start..],
+            None => id,
+        }
+    }
 }
+
+/// Length of [`RunEntry::short_id`].
+pub const SHORT_ID_LEN: usize = 6;
+
+/// Shortest partial build ID [`select`] matches, so a stray short word is not
+/// silently taken for an ID.
+pub const MIN_PARTIAL_ID: usize = 4;
 
 /// List every run under `{farm_dir}/run/`, newest first.
 ///
@@ -149,22 +169,151 @@ pub fn find_runs(farm_dir: &Path, goal: &str, variant: Option<&str>) -> Vec<RunE
         .collect()
 }
 
-/// Resolve a user-supplied run specifier.
-///
-/// An exact build ID wins; otherwise the newest run of a goal by that name is
-/// returned. This is what keeps `farm replay test` working now that the local
-/// build ID is no longer the bare goal name — before ADR 0001 the two were the
-/// same string, and users typed the goal.
-pub fn resolve(farm_dir: &Path, spec: &str, variant: Option<&str>) -> Option<RunEntry> {
-    let runs = list_runs(farm_dir);
+/// A run picked by a user-supplied specifier, together with the list it was
+/// picked from: `@N` counts within [`Selection::scope`], and "the previous run"
+/// is `scope[index + 1]`.
+#[derive(Debug, Clone)]
+pub struct Selection {
+    /// Runs the selection is relative to, newest first: the selected run's goal
+    /// (or every run, for a bare `@N` or no specifier).
+    pub scope: Vec<RunEntry>,
+    /// Position of the selected run in `scope`.
+    pub index: usize,
+}
 
-    if let Some(exact) = runs.iter().find(|run| run.build_id == spec) {
-        return Some(exact.clone());
+impl Selection {
+    /// The selected run.
+    pub fn run(&self) -> &RunEntry {
+        &self.scope[self.index]
+    }
+}
+
+/// Resolve a user-supplied run specifier, tried in this order:
+///
+/// 1. an exact build ID;
+/// 2. `goal@N` / `@N`: N runs back within that goal / within all runs
+///    (`@0` is the newest), as numbered by `farm log --list`;
+/// 3. a goal name: its newest run;
+/// 4. a unique prefix or suffix of a build ID, at least [`MIN_PARTIAL_ID`]
+///    characters (the [`RunEntry::short_id`] shown by `--list`).
+///
+/// No specifier selects the newest run of any goal. `variant` restricts every
+/// form. Errors are ready-to-print and name what *is* available.
+pub fn select(farm_dir: &Path, spec: Option<&str>, variant: Option<&str>) -> Result<Selection, String> {
+    let all: Vec<RunEntry> = list_runs(farm_dir)
+        .into_iter()
+        .filter(|run| variant.is_none_or(|v| run.variant() == Some(v)))
+        .collect();
+
+    if all.is_empty() {
+        return Err(match variant {
+            Some(v) if !list_runs(farm_dir).is_empty() => format!("No runs recorded for variant '{v}'."),
+            _ => "No runs recorded yet. Run a goal first.".to_string(),
+        });
     }
 
-    runs.into_iter()
-        .filter(|run| run.goal() == Some(spec))
-        .find(|run| variant.is_none_or(|v| run.variant() == Some(v)))
+    let Some(spec) = spec else {
+        return Ok(Selection { scope: all, index: 0 });
+    };
+
+    // 1. Exact build ID. Checked first so an ID can never be shadowed — CI
+    //    build IDs may well coincide with a goal name.
+    if let Some(pos) = all.iter().position(|run| run.build_id == spec) {
+        return Ok(scoped_to_goal(all, pos));
+    }
+
+    // 2. `goal@N` / `@N`.
+    if let Some((goal, n)) = spec.rsplit_once('@') {
+        let n: usize = n
+            .parse()
+            .map_err(|_| format!("Invalid run index '{spec}': expected goal@N or @N, e.g. @0 for the newest run"))?;
+        let scope = if goal.is_empty() {
+            all
+        } else {
+            let runs = goal_runs(&all, goal);
+            if runs.is_empty() {
+                return Err(no_match(&all, goal));
+            }
+            runs
+        };
+        if n >= scope.len() {
+            return Err(format!(
+                "'{spec}' is out of range: {} run(s) recorded{} (@0 to @{})",
+                scope.len(),
+                if goal.is_empty() { String::new() } else { format!(" for '{goal}'") },
+                scope.len() - 1
+            ));
+        }
+        return Ok(Selection { scope, index: n });
+    }
+
+    // 3. Goal name.
+    let scope = goal_runs(&all, spec);
+    if !scope.is_empty() {
+        return Ok(Selection { scope, index: 0 });
+    }
+
+    // 4. Unique part of a build ID.
+    if spec.chars().count() >= MIN_PARTIAL_ID {
+        let hits: Vec<usize> = all
+            .iter()
+            .enumerate()
+            .filter(|(_, run)| run.build_id.starts_with(spec) || run.build_id.ends_with(spec))
+            .map(|(i, _)| i)
+            .collect();
+        match hits.as_slice() {
+            [] => {}
+            [pos] => return Ok(scoped_to_goal(all, *pos)),
+            many => {
+                let ids: Vec<&str> = many.iter().take(5).map(|&i| all[i].build_id.as_str()).collect();
+                return Err(format!(
+                    "'{spec}' matches {} runs: {}{}. Use more characters.",
+                    many.len(),
+                    ids.join(", "),
+                    if many.len() > ids.len() { ", …" } else { "" }
+                ));
+            }
+        }
+    }
+
+    Err(no_match(&all, spec))
+}
+
+/// Resolve a user-supplied run specifier to a single run; see [`select`].
+///
+/// This is what keeps `farm replay test` working now that the local build ID
+/// is no longer the bare goal name — before ADR 0001 the two were the same
+/// string, and users typed the goal.
+pub fn resolve(farm_dir: &Path, spec: &str, variant: Option<&str>) -> Option<RunEntry> {
+    select(farm_dir, Some(spec), variant).ok().map(|sel| sel.run().clone())
+}
+
+/// Runs of `goal`, newest first (`all` is already in that order).
+fn goal_runs(all: &[RunEntry], goal: &str) -> Vec<RunEntry> {
+    all.iter().filter(|run| run.goal() == Some(goal)).cloned().collect()
+}
+
+/// Select `all[pos]`, scoped to the runs of its goal so `@N` and "previous run"
+/// stay within that goal. A run with no manifest has no goal: it is its own scope.
+fn scoped_to_goal(all: Vec<RunEntry>, pos: usize) -> Selection {
+    let picked = &all[pos];
+    let Some(goal) = picked.goal() else {
+        return Selection { scope: vec![picked.clone()], index: 0 };
+    };
+    let id = picked.build_id.clone();
+    let scope = goal_runs(&all, goal);
+    let index = scope.iter().position(|run| run.build_id == id).unwrap_or(0);
+    Selection { scope, index }
+}
+
+fn no_match(all: &[RunEntry], spec: &str) -> String {
+    let mut goals: Vec<&str> = all.iter().filter_map(|r| r.goal()).collect();
+    goals.sort_unstable();
+    goals.dedup();
+    format!(
+        "No run matches '{spec}' (not a goal, run index or build ID). Recorded goals: {}",
+        goals.join(", ")
+    )
 }
 
 /// The most recent run of any goal, newest first. Backs `farm log` with no
@@ -293,6 +442,85 @@ mod tests {
 
         let by_goal = find_runs(&farm_dir, "test", None);
         assert_eq!(by_goal.len(), 1);
+    }
+
+    fn select_id(farm_dir: &Path, spec: &str) -> Result<String, String> {
+        select(farm_dir, Some(spec), None).map(|sel| sel.run().build_id.clone())
+    }
+
+    /// Three `build` runs and one `test` run, IDs shaped like generated ones.
+    fn history() -> PathBuf {
+        let farm_dir = temp_farm_dir();
+        write_run(&farm_dir, "build-20260101T100000.000Z-aaa111", "build", "default", "2026-01-01T10:00:00+00:00");
+        write_run(&farm_dir, "build-20260101T110000.000Z-bbb222", "build", "default", "2026-01-01T11:00:00+00:00");
+        write_run(&farm_dir, "test-20260101T113000.000Z-ccc333", "test", "default", "2026-01-01T11:30:00+00:00");
+        write_run(&farm_dir, "build-20260101T120000.000Z-ddd444", "build", "release", "2026-01-01T12:00:00+00:00");
+        farm_dir
+    }
+
+    #[test]
+    fn select_by_index() {
+        let farm_dir = history();
+        assert_eq!(select_id(&farm_dir, "@0").unwrap(), "build-20260101T120000.000Z-ddd444");
+        assert_eq!(select_id(&farm_dir, "@1").unwrap(), "test-20260101T113000.000Z-ccc333");
+        assert_eq!(select_id(&farm_dir, "build@0").unwrap(), "build-20260101T120000.000Z-ddd444");
+        assert_eq!(select_id(&farm_dir, "build@2").unwrap(), "build-20260101T100000.000Z-aaa111");
+
+        let err = select_id(&farm_dir, "build@3").unwrap_err();
+        assert!(err.contains("out of range") && err.contains("@0 to @2"), "{err}");
+        let err = select_id(&farm_dir, "@x").unwrap_err();
+        assert!(err.contains("Invalid run index"), "{err}");
+        let err = select_id(&farm_dir, "nope@0").unwrap_err();
+        assert!(err.contains("Recorded goals: build, test"), "{err}");
+    }
+
+    #[test]
+    fn select_by_partial_id() {
+        let farm_dir = history();
+        // Suffix (the short ID), prefix, and the exact ID.
+        assert_eq!(select_id(&farm_dir, "bbb222").unwrap(), "build-20260101T110000.000Z-bbb222");
+        assert_eq!(select_id(&farm_dir, "test-2026").unwrap(), "test-20260101T113000.000Z-ccc333");
+        assert_eq!(
+            select_id(&farm_dir, "build-20260101T100000.000Z-aaa111").unwrap(),
+            "build-20260101T100000.000Z-aaa111"
+        );
+
+        // Too short to be taken for an ID, and ambiguous prefixes are refused.
+        assert!(select_id(&farm_dir, "222").unwrap_err().contains("No run matches"));
+        let err = select_id(&farm_dir, "build-2026").unwrap_err();
+        assert!(err.contains("matches 3 runs"), "{err}");
+    }
+
+    /// Selecting a run by ID scopes it to its goal, so "previous run" means
+    /// the previous run of the *same goal*.
+    #[test]
+    fn id_selection_is_scoped_to_its_goal() {
+        let farm_dir = history();
+        let sel = select(&farm_dir, Some("bbb222"), None).unwrap();
+        assert_eq!(sel.index, 1);
+        assert!(sel.scope.iter().all(|r| r.goal() == Some("build")));
+        assert_eq!(sel.scope[sel.index + 1].build_id, "build-20260101T100000.000Z-aaa111");
+    }
+
+    #[test]
+    fn select_respects_variant() {
+        let farm_dir = history();
+        let sel = select(&farm_dir, Some("build"), Some("default")).unwrap();
+        assert_eq!(sel.run().build_id, "build-20260101T110000.000Z-bbb222");
+        assert_eq!(sel.scope.len(), 2);
+        // A run of another variant is not reachable by ID under --variant.
+        assert!(select(&farm_dir, Some("ddd444"), Some("default")).is_err());
+        assert!(select(&farm_dir, None, Some("debug")).unwrap_err().contains("variant 'debug'"));
+    }
+
+    #[test]
+    fn short_id_is_the_tail() {
+        let farm_dir = history();
+        let run = select(&farm_dir, Some("@0"), None).unwrap().run().clone();
+        assert_eq!(run.short_id(), "ddd444");
+        let farm_dir = temp_farm_dir();
+        write_run(&farm_dir, "ci-7", "build", "default", "2026-01-01T10:00:00+00:00");
+        assert_eq!(list_runs(&farm_dir)[0].short_id(), "ci-7");
     }
 
     #[test]

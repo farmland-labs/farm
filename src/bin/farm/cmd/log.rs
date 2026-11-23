@@ -17,11 +17,14 @@ use farm::runs::{self, RunEntry};
 
 /// Everything `farm log` was invoked with.
 pub(crate) struct LogArgs {
-    pub goal: Option<String>,
+    /// Run specifier (goal, `goal@N`, `@N`, build ID or unique part of one).
+    pub run: Option<String>,
     pub variant: Option<String>,
     pub list: bool,
-    pub diff: bool,
-    pub against: usize,
+    /// `--diff` (`Some(None)`) or `--diff RUN` (`Some(Some(run))`).
+    pub diff: Option<Option<String>>,
+    /// `--against N`: diff against N runs before the selected one.
+    pub against: Option<usize>,
     pub follow: bool,
     pub raw: bool,
     pub only_output: bool,
@@ -33,27 +36,18 @@ type CmdResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Handle the `farm log` command.
 pub(crate) fn handle_log_command(args: LogArgs) -> CmdResult {
-    let workspace = farm::context::find_workspace().unwrap_or(std::env::current_dir()?);
-    let farm_dir = workspace.join(".farm");
-
-    let matching = match args.goal.as_deref() {
-        Some(goal) => runs::find_runs(&farm_dir, goal, args.variant.as_deref()),
-        None => runs::list_runs(&farm_dir),
-    };
-
-    if matching.is_empty() {
-        return Err(no_runs_message(&farm_dir, args.goal.as_deref()).into());
-    }
+    let farm_dir = farm_dir()?;
+    let selection = runs::select(&farm_dir, args.run.as_deref(), args.variant.as_deref())?;
 
     if args.list {
-        return print_run_list(&matching, args.limit);
+        return print_run_list(&selection, args.limit);
     }
 
-    if args.diff {
-        return print_diff(&matching, &args);
+    if args.diff.is_some() || args.against.is_some() {
+        return print_diff(&farm_dir, &selection, &args);
     }
 
-    let latest = &matching[0];
+    let latest = selection.run();
 
     if args.path {
         for path in log_paths(latest) {
@@ -75,24 +69,10 @@ pub(crate) fn handle_log_command(args: LogArgs) -> CmdResult {
     Ok(())
 }
 
-/// Explain what *is* available when nothing matched.
-fn no_runs_message(farm_dir: &Path, goal: Option<&str>) -> String {
-    let all = runs::list_runs(farm_dir);
-
-    match goal {
-        _ if all.is_empty() => "No runs recorded yet. Run a goal first.".to_string(),
-        Some(goal) => {
-            let mut known: Vec<&str> = all.iter().filter_map(|r| r.goal()).collect();
-            known.sort_unstable();
-            known.dedup();
-            format!(
-                "No runs found for '{}'. Recorded goals: {}",
-                goal,
-                known.join(", ")
-            )
-        }
-        None => "No runs recorded yet. Run a goal first.".to_string(),
-    }
+/// `.farm/` of the current workspace.
+pub(crate) fn farm_dir() -> std::io::Result<PathBuf> {
+    let workspace = farm::context::find_workspace().unwrap_or(std::env::current_dir()?);
+    Ok(workspace.join(".farm"))
 }
 
 /// Log files belonging to a run: the combined log, or the split pair.
@@ -156,62 +136,132 @@ fn render(run: &RunEntry, args: &LogArgs) -> Result<String, String> {
     ))
 }
 
-fn print_run_list(matching: &[RunEntry], limit: usize) -> CmdResult {
-    for run in matching.iter().take(limit) {
-        let (marker, status) = match run.status() {
-            RunStatus::Ok => ("✓".green(), "ok".green()),
-            RunStatus::Fail => ("✗".red(), "fail".red()),
-            RunStatus::Running => ("•".yellow(), "running".yellow()),
-        };
+fn print_run_list(selection: &runs::Selection, limit: usize) -> CmdResult {
+    let scope = &selection.scope;
+    // Always show the selected run, even past the limit.
+    let shown = limit.max(selection.index + 1).min(scope.len());
+    let index_width = format!("@{}", shown.saturating_sub(1)).len();
 
-        let when = run
-            .manifest
-            .as_ref()
-            .map(|m| m.created_at.as_str())
-            .unwrap_or("(unknown)");
-        let duration = run
-            .manifest
-            .as_ref()
-            .filter(|m| m.run_status() != RunStatus::Running)
-            .map(|m| format_duration(m.duration_ms))
-            .unwrap_or_else(|| "-".to_string());
-        let mode = if run.interactive() { " tty" } else { "" };
-
+    for (i, run) in scope.iter().enumerate().take(shown) {
+        let pointer = if i == selection.index && selection.index != 0 { "▶" } else { " " };
         println!(
-            "{} {:<8} {:<32} {:>8}{}  {}",
-            marker,
-            status,
-            when,
-            duration,
-            mode.dimmed(),
-            run.build_id.dimmed()
+            "{}{:>width$} {}",
+            pointer,
+            format!("@{i}").bold(),
+            run_line(run),
+            width = index_width
         );
     }
 
-    if matching.len() > limit {
+    if scope.len() > shown {
         println!(
             "{}",
-            format!("… {} older run(s) not shown", matching.len() - limit).dimmed()
+            format!("… {} older run(s) not shown (-n to show more)", scope.len() - shown).dimmed()
+        );
+    }
+
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        println!(
+            "{}",
+            "open one with `farm log @N`, `farm log <goal>@N` or `farm log <highlighted id>`".dimmed()
         );
     }
 
     Ok(())
 }
 
-fn print_diff(matching: &[RunEntry], args: &LogArgs) -> CmdResult {
-    if args.against == 0 {
-        return Err("--against must be at least 1 (1 = the previous run)".into());
-    }
-
-    let newer = &matching[0];
-    let Some(older) = matching.get(args.against) else {
-        return Err(format!(
-            "Only {} run(s) recorded; cannot diff against {} back",
-            matching.len(),
-            args.against
-        )
-        .into());
+/// One `--list` row (without the index): status, local start time, duration,
+/// tty marker and the build ID with its short ID highlighted.
+fn run_line(run: &RunEntry) -> String {
+    let (marker, status) = match run.status() {
+        RunStatus::Ok => ("✓".green(), "ok".green()),
+        RunStatus::Fail => ("✗".red(), "fail".red()),
+        RunStatus::Running => ("•".yellow(), "running".yellow()),
     };
+    let mode = if run.interactive() { "tty" } else { "" };
+    let short = run.short_id();
+    let head = &run.build_id[..run.build_id.len() - short.len()];
+
+    format!(
+        "{} {:<7} {}  {:>7} {:<3}  {}{}",
+        marker,
+        status,
+        started_local(run),
+        duration(run),
+        mode.dimmed(),
+        head.dimmed(),
+        short.cyan().bold()
+    )
+}
+
+/// Start time in local time, short form (`11-22 12:59:37`).
+pub(crate) fn started_local(run: &RunEntry) -> String {
+    let local: chrono::DateTime<chrono::Local> = run.started_at().into();
+    local.format("%m-%d %H:%M:%S").to_string()
+}
+
+/// Run duration, or `-` while it is still running.
+pub(crate) fn duration(run: &RunEntry) -> String {
+    run.manifest
+        .as_ref()
+        .filter(|m| m.run_status() != RunStatus::Running)
+        .map(|m| format_duration(m.duration_ms))
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// Short status word.
+pub(crate) fn status_word(run: &RunEntry) -> &'static str {
+    match run.status() {
+        RunStatus::Ok => "ok",
+        RunStatus::Fail => "fail",
+        RunStatus::Running => "running",
+    }
+}
+
+/// The older side of a diff: `--diff RUN`, `--against N`, or the run before
+/// the selected one. `@N` counts within the selected run's scope (its goal);
+/// every other form resolves like the positional argument.
+fn diff_base(farm_dir: &Path, selection: &runs::Selection, args: &LogArgs) -> Result<RunEntry, String> {
+    let spec = args.diff.clone().flatten();
+    let back = match (&spec, args.against) {
+        (Some(_), Some(_)) => {
+            return Err("--against cannot be combined with --diff RUN; use one of them".to_string());
+        }
+        (Some(spec), None) => {
+            if let Some(n) = spec.strip_prefix('@') {
+                let n: usize = n
+                    .parse()
+                    .map_err(|_| format!("Invalid run index '{spec}': expected @N, e.g. @1"))?;
+                return selection.scope.get(n).cloned().ok_or_else(|| {
+                    format!(
+                        "'{spec}' is out of range: {} run(s) recorded (@0 to @{})",
+                        selection.scope.len(),
+                        selection.scope.len() - 1
+                    )
+                });
+            }
+            return runs::select(farm_dir, Some(spec), args.variant.as_deref())
+                .map(|sel| sel.run().clone());
+        }
+        (None, Some(0)) => return Err("--against must be at least 1 (1 = the previous run)".to_string()),
+        (None, Some(n)) => n,
+        (None, None) => 1,
+    };
+
+    selection.scope.get(selection.index + back).cloned().ok_or_else(|| {
+        let older = selection.scope.len() - selection.index - 1;
+        format!("Only {older} earlier run(s) recorded; cannot diff against {back} back")
+    })
+}
+
+fn print_diff(farm_dir: &Path, selection: &runs::Selection, args: &LogArgs) -> CmdResult {
+    let newer = selection.run();
+    let older = diff_base(farm_dir, selection, args)?;
+    let older = &older;
+
+    if newer.build_id == older.build_id {
+        return Err(format!("Both sides of the diff are the same run ({})", newer.build_id).into());
+    }
 
     // Normalize both against *both* build IDs, so a path mentioning either run
     // collapses to the same placeholder instead of showing up as a difference.
@@ -277,19 +327,7 @@ fn print_diff(matching: &[RunEntry], args: &LogArgs) -> CmdResult {
 
 /// One-line description of a run for diff headers.
 fn describe(run: &RunEntry) -> String {
-    let when = run
-        .manifest
-        .as_ref()
-        .map(|m| m.created_at.clone())
-        .unwrap_or_else(|| "unknown time".to_string());
-
-    let status = match run.status() {
-        RunStatus::Ok => "ok",
-        RunStatus::Fail => "fail",
-        RunStatus::Running => "running",
-    };
-
-    format!("({}, {})", status, when)
+    format!("({}, {})", status_word(run), started_local(run))
 }
 
 /// Print the log and keep printing as it grows, until the run stops running.
