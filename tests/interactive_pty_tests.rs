@@ -54,6 +54,28 @@ fn isolate_test_env() {
     });
 }
 
+/// Block until the spawned `farm` has switched its terminal (the PTY slave)
+/// into raw mode, i.e. `ICANON` is off.
+///
+/// Input written before that point is processed by the *outer* line discipline
+/// in cooked mode: Ctrl-D becomes an EOF marker instead of a `0x04` byte. Linux
+/// n_tty then hands farm a `0x00` once raw mode is on, so the child never sees
+/// EOF and the run hangs (macOS happens to keep the raw byte). Real users don't
+/// type-ahead Ctrl-D before farm is up; tests must not either.
+fn wait_for_raw_mode(master: &dyn portable_pty::MasterPty) {
+    use std::os::unix::io::RawFd;
+    let fd: RawFd = master.as_raw_fd().expect("pty master fd");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let mut t: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(fd, &mut t) } == 0 && t.c_lflag & libc::ICANON == 0 {
+            return;
+        }
+        assert!(Instant::now() < deadline, "farm never put its terminal into raw mode");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Read from `reader` until EOF (child exit closes the PTY), collecting all
 /// bytes. Runs on its own thread so the child never blocks on a full PTY.
 fn drain(mut reader: Box<dyn Read + Send>) -> std::thread::JoinHandle<Vec<u8>> {
@@ -99,7 +121,9 @@ fn interactive_run_forwards_input_to_child_and_logs_it() {
     let drainer = drain(reader);
 
     // Send a line of "keystrokes", then Ctrl-D (0x04) so `cat` sees EOF and
-    // exits. The inner PTY buffers this until `cat` reads it.
+    // exits. Only once farm is relaying raw bytes; the inner PTY then buffers
+    // this until `cat` reads it.
+    wait_for_raw_mode(pair.master.as_ref());
     writer.write_all(b"hello-from-tty\n").unwrap();
     writer.write_all(&[0x04]).unwrap();
     writer.flush().unwrap();
@@ -159,8 +183,10 @@ fn ctrl_c_interrupts_the_running_task_not_farm() {
     let mut writer = pair.master.take_writer().expect("writer");
     let drainer = drain(reader);
 
-    // Let the child reach `sleep`, then press Ctrl-C (0x03).
-    std::thread::sleep(Duration::from_millis(700));
+    // Wait until farm relays raw bytes (otherwise ^C would signal farm itself,
+    // not the task), give the child a moment to reach `sleep`, then press Ctrl-C.
+    wait_for_raw_mode(pair.master.as_ref());
+    std::thread::sleep(Duration::from_millis(300));
     let start = Instant::now();
     writer.write_all(&[0x03]).unwrap();
     writer.flush().unwrap();
@@ -220,8 +246,9 @@ fn double_ctrl_c_force_kills_a_signal_trapping_task() {
     let mut writer = pair.master.take_writer().expect("writer");
     let drainer = drain(reader);
 
-    // First Ctrl-C: absorbed by the trapping task.
-    std::thread::sleep(Duration::from_millis(800));
+    // First Ctrl-C: absorbed by the trapping task (once its `trap` has run).
+    wait_for_raw_mode(pair.master.as_ref());
+    std::thread::sleep(Duration::from_millis(500));
     writer.write_all(&[0x03]).unwrap();
     writer.flush().unwrap();
 
